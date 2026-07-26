@@ -15,6 +15,7 @@ import {
   resolveAnniversary,
   searchSeedLocations,
   selectableMonths,
+  suggestLocationForTimezone,
   type AnniversaryOrigin,
   type CalculationLocation,
   type DisplayMode,
@@ -29,6 +30,11 @@ export interface PreviewRequest {
   type: SourceRecordType;
   displayName: string;
   displayMode: DisplayMode;
+  /**
+   * Which Adar a yahrzeit falls in during a leap year. Defaults to `both`.
+   * Stored per record in Phase 2; here it is per request.
+   */
+  adarConvention?: 'both' | 'adar_i' | 'adar_ii';
   /** How the user described the date. */
   entryMode: 'hebrew' | 'gregorian';
   /** Hebrew entry. */
@@ -57,6 +63,8 @@ export interface PreviewOk {
   origin: { month: HebrewMonthName; day: number; year?: number };
   interpretedFrom?: { gregorianDate: string; sunsetStatus: SunsetStatus; sunsetIso?: string };
   requiresReview: boolean;
+  /** Hebrew years materialised, which is not occurrences.length when a year doubles. */
+  hebrewYearsGenerated: number;
   occurrences: Occurrence[];
 }
 
@@ -71,6 +79,20 @@ const MAX_COUNT = 50;
 
 export function listLocations(query = ''): CalculationLocation[] {
   return searchSeedLocations(query, 25);
+}
+
+/**
+ * Best guess at a calculation location from an IANA time zone.
+ *
+ * In Phase 2 the preferred source is the destination calendar's own zone, read
+ * from the Google Calendar API once the account is connected. Until then - and
+ * as the fallback for feed-only users - the browser's zone is the closest
+ * available signal. Either way it is only a pre-selection: the resolved place
+ * name is shown and can be changed, because one time zone spans enough
+ * longitude for sunset to differ by more than half an hour.
+ */
+export function suggestLocation(timezoneId: string | undefined): CalculationLocation | undefined {
+  return suggestLocationForTimezone(timezoneId);
 }
 
 export function listMonths(hebrewYear?: number): HebrewMonthName[] {
@@ -139,6 +161,9 @@ export function buildPreview(request: PreviewRequest): PreviewResponse {
       displayMode: request.displayMode,
       count,
       ...(request.nowEpochMs ? { nowEpochMs: request.nowEpochMs } : {}),
+      ...(request.adarConvention
+        ? { conventions: { adarOrdinaryYahrzeitInLeapYear: request.adarConvention } }
+        : {}),
     });
 
     if (result.status === 'needs_user_decision') {
@@ -151,6 +176,7 @@ export function buildPreview(request: PreviewRequest): PreviewResponse {
       origin,
       ...(interpretedFrom ? { interpretedFrom } : {}),
       requiresReview: result.requiresReview,
+      hebrewYearsGenerated: result.hebrewYearsGenerated,
       occurrences: result.occurrences,
     };
   } catch (error) {

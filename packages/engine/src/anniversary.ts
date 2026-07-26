@@ -91,14 +91,63 @@ export interface ResolveAnniversaryInput {
   conventions?: CalculationConventions;
 }
 
+/** One observance of an anniversary within a single Hebrew year. */
+export interface ResolvedAnniversaryDate {
+  hebrewDate: HebrewDate;
+  /**
+   * 0 for the primary observance. A second observance in the same Hebrew year -
+   * currently only a yahrzeit observed in both Adars of a leap year - gets 1.
+   * This value feeds the occurrence key, so it must stay stable for a given
+   * (record, year, observance) forever.
+   */
+  sequence: number;
+  ruleApplied: RuleId;
+  ambiguities: Ambiguity[];
+}
+
 export interface ResolvedAnniversary {
   status: 'resolved';
+  /**
+   * Every observance in the target Hebrew year, in calendar order. Usually one
+   * entry; two when the record's convention observes both Adars.
+   */
+  dates: ResolvedAnniversaryDate[];
+  /** The primary observance, i.e. `dates[0]`. Convenience for single-date callers. */
   hebrewDate: HebrewDate;
   ruleApplied: RuleId;
   ambiguities: Ambiguity[];
 }
 
 export type AnniversaryResolution = ResolvedAnniversary | DecisionRequired<HebrewDate>;
+
+/** Build a resolution with exactly one observance. */
+function single(
+  hebrewDate: HebrewDate,
+  ruleApplied: RuleId,
+  ambiguities: Ambiguity[] = [],
+): ResolvedAnniversary {
+  return {
+    status: 'resolved',
+    dates: [{ hebrewDate, sequence: 0, ruleApplied, ambiguities }],
+    hebrewDate,
+    ruleApplied,
+    ambiguities,
+  };
+}
+
+/** Build a resolution with more than one observance in the same Hebrew year. */
+function multiple(dates: ResolvedAnniversaryDate[]): ResolvedAnniversary {
+  const primary = dates[0];
+  /* c8 ignore next */
+  if (!primary) throw new Error('a resolution must contain at least one date');
+  return {
+    status: 'resolved',
+    dates,
+    hebrewDate: primary.hebrewDate,
+    ruleApplied: primary.ruleApplied,
+    ambiguities: primary.ambiguities,
+  };
+}
 
 export class InvalidOriginError extends Error {}
 
@@ -182,12 +231,12 @@ export function resolveAnniversary(input: ResolveAnniversaryInput): AnniversaryR
 
 function resolveBirthday(origin: NormalisedOrigin, year: number): AnniversaryResolution {
   const targetIsLeap = isLeapYear(year);
-  const ambiguities: Ambiguity[] = [];
 
   // B1: Adar (ordinary origin) or Adar II -> last month of the target year.
   if (isOrdinaryAdar(origin) || origin.month === ADAR_II) {
     const month = lastMonthOfYear(year);
     const applied: HebrewDate = { year, month, day: origin.day };
+    const ambiguities: Ambiguity[] = [];
     if (isOrdinaryAdar(origin) && targetIsLeap) {
       ambiguities.push({
         code: 'ADAR_ORDINARY_IN_LEAP_YEAR',
@@ -199,67 +248,47 @@ function resolveBirthday(origin: NormalisedOrigin, year: number): AnniversaryRes
           'Some families observe it in Adar I.',
       });
     }
-    return {
-      status: 'resolved',
-      hebrewDate: applied,
-      ruleApplied: isOrdinaryAdar(origin)
-        ? targetIsLeap
-          ? 'ADAR_ORDINARY_TO_ADAR_II'
-          : 'SAME_MONTH_AND_DAY'
-        : 'ADAR_TO_LAST_MONTH_OF_YEAR',
-      ambiguities,
-    };
+    const rule: RuleId = isOrdinaryAdar(origin)
+      ? targetIsLeap
+        ? 'ADAR_ORDINARY_TO_ADAR_II'
+        : 'SAME_MONTH_AND_DAY'
+      : 'ADAR_TO_LAST_MONTH_OF_YEAR';
+    return single(applied, rule, ambiguities);
   }
 
   // B2 / B3: a 30th that does not exist in the target year moves to the 1st of
   // the following month.
   if (origin.month === CHESHVAN && origin.day === 30 && !isLongCheshvan(year)) {
     const applied: HebrewDate = { year, month: KISLEV, day: 1 };
-    return {
-      status: 'resolved',
-      hebrewDate: applied,
-      ruleApplied: 'CHESHVAN_30_TO_1_KISLEV',
-      ambiguities: [missing30th(applied, 'Cheshvan', { year, month: CHESHVAN, day: 29 })],
-    };
+    return single(applied, 'CHESHVAN_30_TO_1_KISLEV', [
+      missing30th(applied, 'Cheshvan', { year, month: CHESHVAN, day: 29 }),
+    ]);
   }
   if (origin.month === KISLEV && origin.day === 30 && isShortKislev(year)) {
     const applied: HebrewDate = { year, month: TEVET, day: 1 };
-    return {
-      status: 'resolved',
-      hebrewDate: applied,
-      ruleApplied: 'KISLEV_30_TO_1_TEVET',
-      ambiguities: [missing30th(applied, 'Kislev', { year, month: KISLEV, day: 29 })],
-    };
+    return single(applied, 'KISLEV_30_TO_1_TEVET', [
+      missing30th(applied, 'Kislev', { year, month: KISLEV, day: 29 }),
+    ]);
   }
 
   // B4: 30 Adar I in an ordinary year -> 1 Nisan.
   if (isAdarI(origin) && origin.day === 30 && !targetIsLeap) {
     const applied: HebrewDate = { year, month: NISAN, day: 1 };
-    return {
-      status: 'resolved',
-      hebrewDate: applied,
-      ruleApplied: 'ADAR_I_30_TO_1_NISAN',
-      ambiguities: [
-        {
-          code: 'ADAR_I_30_IN_ORDINARY_YEAR',
-          applied,
-          alternative: { year, month: SHVAT, day: 30 },
-          explanation:
-            'This birthday is on 30 Adar I, and this Hebrew year has only one Adar, ' +
-            'with 29 days. The standard convention for a birthday moves it to 1 Nisan. ' +
-            'The corresponding yahrzeit rule instead uses 30 Shevat.',
-        },
-      ],
-    };
+    return single(applied, 'ADAR_I_30_TO_1_NISAN', [
+      {
+        code: 'ADAR_I_30_IN_ORDINARY_YEAR',
+        applied,
+        alternative: { year, month: SHVAT, day: 30 },
+        explanation:
+          'This birthday is on 30 Adar I, and this Hebrew year has only one Adar, ' +
+          'with 29 days. The standard convention for a birthday moves it to 1 Nisan. ' +
+          'The corresponding yahrzeit rule instead uses 30 Shevat.',
+      },
+    ]);
   }
 
   // B5: same month number and day.
-  return {
-    status: 'resolved',
-    hebrewDate: { year, month: origin.month, day: origin.day },
-    ruleApplied: 'SAME_MONTH_AND_DAY',
-    ambiguities,
-  };
+  return single({ year, month: origin.month, day: origin.day }, 'SAME_MONTH_AND_DAY');
 }
 
 function resolveYahrzeit(
@@ -282,15 +311,11 @@ function resolveYahrzeit(
       // Y1: the last day of Cheshvan in the target year (29th or 30th).
       const day = daysInMonth(CHESHVAN, year);
       const applied: HebrewDate = { year, month: CHESHVAN, day };
-      return {
-        status: 'resolved',
-        hebrewDate: applied,
-        ruleApplied: 'CHESHVAN_30_TO_LAST_DAY_OF_CHESHVAN',
-        ambiguities:
-          day === 30
-            ? []
-            : [missing30th(applied, 'Cheshvan', { year, month: KISLEV, day: 1 })],
-      };
+      return single(
+        applied,
+        'CHESHVAN_30_TO_LAST_DAY_OF_CHESHVAN',
+        day === 30 ? [] : [missing30th(applied, 'Cheshvan', { year, month: KISLEV, day: 1 })],
+      );
     }
   }
 
@@ -299,99 +324,124 @@ function resolveYahrzeit(
       // Y2: the last day of Kislev in the target year (29th or 30th).
       const day = daysInMonth(KISLEV, year);
       const applied: HebrewDate = { year, month: KISLEV, day };
-      return {
-        status: 'resolved',
-        hebrewDate: applied,
-        ruleApplied: 'KISLEV_30_TO_LAST_DAY_OF_KISLEV',
-        ambiguities:
-          day === 30 ? [] : [missing30th(applied, 'Kislev', { year, month: TEVET, day: 1 })],
-      };
+      return single(
+        applied,
+        'KISLEV_30_TO_LAST_DAY_OF_KISLEV',
+        day === 30 ? [] : [missing30th(applied, 'Kislev', { year, month: TEVET, day: 1 })],
+      );
     }
   }
 
   // Y3: died in Adar II -> last month of the target year.
   if (origin.month === ADAR_II) {
-    return {
-      status: 'resolved',
-      hebrewDate: { year, month: lastMonthOfYear(year), day: origin.day },
-      ruleApplied: 'ADAR_TO_LAST_MONTH_OF_YEAR',
-      ambiguities: [],
-    };
+    return single(
+      { year, month: lastMonthOfYear(year), day: origin.day },
+      'ADAR_TO_LAST_MONTH_OF_YEAR',
+    );
   }
 
   // Y4: died 30 Adar I, target year ordinary -> 30 Shevat.
   if (isAdarI(origin) && origin.day === 30 && !targetIsLeap) {
     const applied: HebrewDate = { year, month: SHVAT, day: 30 };
-    return {
-      status: 'resolved',
-      hebrewDate: applied,
-      ruleApplied: 'ADAR_I_30_TO_30_SHVAT',
-      ambiguities: [
-        {
-          code: 'ADAR_I_30_IN_ORDINARY_YEAR',
-          applied,
-          alternative: { year, month: NISAN, day: 1 },
-          explanation:
-            'This yahrzeit is on 30 Adar I, and this Hebrew year has only one Adar, ' +
-            'with 29 days. The standard convention moves it to 30 Shevat, the last ' +
-            'day of the preceding month.',
-        },
-      ],
-    };
+    return single(applied, 'ADAR_I_30_TO_30_SHVAT', [
+      {
+        code: 'ADAR_I_30_IN_ORDINARY_YEAR',
+        applied,
+        alternative: { year, month: NISAN, day: 1 },
+        explanation:
+          'This yahrzeit is on 30 Adar I, and this Hebrew year has only one Adar, ' +
+          'with 29 days. The standard convention moves it to 30 Shevat, the last ' +
+          'day of the preceding month.',
+      },
+    ]);
   }
 
-  // Died in Adar of an ordinary year, observed in a leap year: the standard
-  // rule keeps the month number, which is Adar I. Widely disputed - flag it,
-  // and honour a stored per-record convention.
+  // Y5: died in Adar of an ordinary year, observed in a leap year, which has
+  // two Adars. Three conventions are supported; "both" is the default, and is
+  // the only one that produces two observances in a single Hebrew year.
   if (isOrdinaryAdar(origin) && targetIsLeap) {
-    const useAdarII = conventions.adarOrdinaryYahrzeitInLeapYear === 'adar_ii';
-    const month = useAdarII ? ADAR_II : ADAR_I;
-    const applied: HebrewDate = { year, month, day: origin.day };
-    return {
-      status: 'resolved',
-      hebrewDate: applied,
-      ruleApplied: useAdarII ? 'ADAR_ORDINARY_TO_ADAR_II' : 'ADAR_ORDINARY_TO_ADAR_I',
-      ambiguities: [
-        {
-          code: 'ADAR_ORDINARY_IN_LEAP_YEAR',
-          applied,
-          alternative: { year, month: useAdarII ? ADAR_I : ADAR_II, day: origin.day },
-          explanation:
-            'This yahrzeit is in Adar, and this Hebrew year has two Adars. ' +
-            `Hebrew Dates is applying ${useAdarII ? 'Adar II' : 'Adar I'} for this record. ` +
-            'Customs differ: some observe the other Adar, and some observe both. ' +
-            'Please follow your family custom or consult your rabbi.',
-        },
-      ],
-    };
+    return resolveOrdinaryAdarYahrzeitInLeapYear(origin, year, conventions);
   }
 
-  // Y5: same month and day, then fall forward off a 30th that does not exist.
+  // Y6: same month and day, then fall forward off a 30th that does not exist.
   if (origin.month === CHESHVAN && origin.day === 30 && !isLongCheshvan(year)) {
     const applied: HebrewDate = { year, month: KISLEV, day: 1 };
-    return {
-      status: 'resolved',
-      hebrewDate: applied,
-      ruleApplied: 'CHESHVAN_30_TO_1_KISLEV',
-      ambiguities: [missing30th(applied, 'Cheshvan', { year, month: CHESHVAN, day: 29 })],
-    };
+    return single(applied, 'CHESHVAN_30_TO_1_KISLEV', [
+      missing30th(applied, 'Cheshvan', { year, month: CHESHVAN, day: 29 }),
+    ]);
   }
   if (origin.month === KISLEV && origin.day === 30 && isShortKislev(year)) {
     const applied: HebrewDate = { year, month: TEVET, day: 1 };
-    return {
-      status: 'resolved',
-      hebrewDate: applied,
-      ruleApplied: 'KISLEV_30_TO_1_TEVET',
-      ambiguities: [missing30th(applied, 'Kislev', { year, month: KISLEV, day: 29 })],
-    };
+    return single(applied, 'KISLEV_30_TO_1_TEVET', [
+      missing30th(applied, 'Kislev', { year, month: KISLEV, day: 29 }),
+    ]);
   }
 
-  return {
-    status: 'resolved',
-    hebrewDate: { year, month: origin.month, day: origin.day },
-    ruleApplied: 'SAME_MONTH_AND_DAY',
-    ambiguities: [],
-  };
+  return single({ year, month: origin.month, day: origin.day }, 'SAME_MONTH_AND_DAY');
+}
+
+/**
+ * A yahrzeit for someone who died in Adar of an ordinary year, falling in a
+ * leap year that has both an Adar I and an Adar II.
+ *
+ * The standard calendrical rule (Reingold & Dershowitz) keeps the month number,
+ * which is Adar I. Many communities observe Adar II instead, and a widespread
+ * custom observes the yahrzeit in **both** Adars. All three are supported, and
+ * "both" is the default: it is the option that cannot cause a yahrzeit to be
+ * missed, and the extra observance is visible and removable rather than silent.
+ *
+ * "Both" is the only case in the engine that produces two occurrences in one
+ * Hebrew year, which is why `sequence` exists in the occurrence key.
+ */
+function resolveOrdinaryAdarYahrzeitInLeapYear(
+  origin: NormalisedOrigin,
+  year: number,
+  conventions: CalculationConventions,
+): AnniversaryResolution {
+  const convention = conventions.adarOrdinaryYahrzeitInLeapYear;
+  const inAdarI: HebrewDate = { year, month: ADAR_I, day: origin.day };
+  const inAdarII: HebrewDate = { year, month: ADAR_II, day: origin.day };
+
+  if (convention === 'both') {
+    const explanation =
+      'This Hebrew year has two Adars. Following the custom of observing a ' +
+      'yahrzeit in both, Hebrew Dates has placed it in Adar I and again in ' +
+      'Adar II. You can switch this record to a single Adar at any time. ' +
+      'Please follow your family custom or consult your rabbi.';
+    return multiple([
+      {
+        hebrewDate: inAdarI,
+        sequence: 0,
+        ruleApplied: 'ADAR_ORDINARY_TO_ADAR_I',
+        ambiguities: [
+          { code: 'ADAR_ORDINARY_IN_LEAP_YEAR', applied: inAdarI, explanation },
+        ],
+      },
+      {
+        hebrewDate: inAdarII,
+        sequence: 1,
+        ruleApplied: 'ADAR_ORDINARY_TO_ADAR_II',
+        ambiguities: [
+          { code: 'ADAR_ORDINARY_IN_LEAP_YEAR', applied: inAdarII, explanation },
+        ],
+      },
+    ]);
+  }
+
+  const useAdarII = convention === 'adar_ii';
+  const applied = useAdarII ? inAdarII : inAdarI;
+  return single(applied, useAdarII ? 'ADAR_ORDINARY_TO_ADAR_II' : 'ADAR_ORDINARY_TO_ADAR_I', [
+    {
+      code: 'ADAR_ORDINARY_IN_LEAP_YEAR',
+      applied,
+      alternative: useAdarII ? inAdarI : inAdarII,
+      explanation:
+        'This yahrzeit is in Adar, and this Hebrew year has two Adars. ' +
+        `Hebrew Dates is applying ${useAdarII ? 'Adar II' : 'Adar I'} for this record. ` +
+        'Customs differ: some observe the other Adar, and some observe both. ' +
+        'Please follow your family custom or consult your rabbi.',
+    },
+  ]);
 }
 
 function missing30th(

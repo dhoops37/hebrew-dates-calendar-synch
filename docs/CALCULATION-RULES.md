@@ -76,7 +76,7 @@ rule. That is intended.
 | Y2 | Died **30 Kislev** and the **first anniversary year** had a 29-day Kislev | The last day of Kislev in the target year | `KISLEV_30_TO_LAST_DAY_OF_KISLEV` |
 | Y3 | Died in **Adar II** | The last month of the target year | `ADAR_TO_LAST_MONTH_OF_YEAR` |
 | Y4 | Died **30 Adar I**, target year is ordinary | **30 Shevat** | `ADAR_I_30_TO_30_SHVAT` |
-| Y5 | Died in **Adar** (ordinary year), target year is a leap year | **Adar I** by default (see below) | `ADAR_ORDINARY_TO_ADAR_I` |
+| Y5 | Died in **Adar** (ordinary year), target year is a leap year | **Both Adars** by default (see below) | `ADAR_ORDINARY_TO_ADAR_I` + `ADAR_ORDINARY_TO_ADAR_II` |
 | Y6 | Otherwise the same month and day, falling forward off a 30th that does not exist | 1 Kislev / 1 Tevet | `CHESHVAN_30_TO_1_KISLEV` / `KISLEV_30_TO_1_TEVET` |
 
 **Y1 and Y2 are the reason the Hebrew year of death is required for those
@@ -100,21 +100,48 @@ For the first: someone who observes a parent's yahrzeit in Adar I and their own
 birthday in Adar II is following the standard rules exactly, and it will look
 like a bug. The warning text says so, in the words PRD 17.2 asks for.
 
-The MVP exposes one convention knob for this case,
-`adarOrdinaryYahrzeitInLeapYear: 'adar_i' | 'adar_ii'`, stored per source
-record. Observing **both** Adars is a real custom and is deliberately *not*
-supported yet, because it means two occurrences in one Hebrew year — see
-`docs/DATA-MODEL.md` §3.5 for the `sequence` column that leaves room for it.
+### The convention knob, and the default
+
+`adarOrdinaryYahrzeitInLeapYear` is stored per source record and accepts:
+
+| Value | Behaviour |
+|---|---|
+| **`both`** (default) | Two observances: 10 Adar I *and* 10 Adar II |
+| `adar_i` | The standard calendrical rule only |
+| `adar_ii` | The practice of many communities only |
+
+`both` is the default because it is a widespread custom and because it is the
+only option that cannot cause a yahrzeit to be *missed*: the extra observance is
+visible, explained, and removable, whereas a wrong single choice is silent.
+
+This is the one case in the engine where a single Hebrew year yields two
+occurrences. It is why `sequence` is part of the occurrence key: **Adar I is
+always sequence 0 and Adar II always sequence 1**, so each observance has a
+stable identifier and its own destination event. Reordering them would re-key
+live calendar events, so a test pins it.
+
+It also means `count` is a number of Hebrew **years**, not of occurrences. A
+twenty-year horizon on an Adar yahrzeit produces twenty years and roughly
+twenty-seven events; `hebrewYearsGenerated` reports the former.
+
+Birthdays are **not** doubled — only yahrzeits. The standard rule for an Adar
+birthday (Adar II) is much less contested.
 
 ## Sunset
 
 - **Algorithm**: NOAA solar calculator via `@hebcal/noaa`, accurate to about a
   minute between ±72° latitude.
 - **Sunset** is the standard refraction-corrected −0.833° solar altitude.
-- **Sea level by default.** Elevation is stored on every location but applied
-  only when `use_elevation` is set, because it moves the answer materially
-  (Jerusalem: ~5 minutes at 754 m) and published calendars usually show sea
-  level. Whether it was applied is part of the calculation snapshot.
+- **Elevation applied by default.** `use_elevation` is set explicitly on each
+  saved location rather than defaulted in code, so what was applied is always
+  visible in the calculation snapshot. It matters: Jerusalem at 754 m sets about
+  five minutes later than the sea-level figure.
+
+  For the halachic review: whether elevation should affect *shkia* is a genuine
+  question, and this default differs from hebcal.com, which publishes sea-level
+  times. Both behaviours are covered by tests — the comparisons against published
+  tables pin sea level explicitly — so flipping the default is one data change
+  plus a recalculation job.
 - **Time zone.** Results are returned as RFC 3339 strings carrying the
   location's UTC offset, derived from the IANA database for the *historical*
   date in question. A 1978 New York sunset correctly reports `-04:00`.

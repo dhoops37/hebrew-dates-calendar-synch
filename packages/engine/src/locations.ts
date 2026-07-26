@@ -19,9 +19,16 @@ export interface LocationProvider {
 }
 
 /**
- * Elevations are approximate city-centre values. They are recorded for every
- * entry but only applied when `useElevation` is set on the saved location;
- * sea-level sunset is the default, matching common published calendars.
+ * Elevations are approximate city-centre values.
+ *
+ * `useElevation` is set explicitly on every entry rather than defaulted
+ * anywhere, because it changes the answer: at Jerusalem's ~750 m it moves sunset
+ * about five minutes later than the sea-level figure. It is part of the
+ * calculation snapshot for exactly that reason.
+ *
+ * Note for the halachic review: applying elevation to shkia is a real question,
+ * and this default differs from hebcal.com, which publishes sea-level times.
+ * Flipping it is a one-line data change plus a recalculation job.
  */
 export const SEED_LOCATIONS: CalculationLocation[] = [
   {
@@ -32,6 +39,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: 35.2137,
     timezoneId: 'Asia/Jerusalem',
     elevationMeters: 754,
+    useElevation: true,
   },
   {
     id: 'seed:beit-shemesh',
@@ -41,6 +49,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: 34.9886,
     timezoneId: 'Asia/Jerusalem',
     elevationMeters: 300,
+    useElevation: true,
   },
   {
     id: 'seed:tel-aviv',
@@ -50,6 +59,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: 34.7818,
     timezoneId: 'Asia/Jerusalem',
     elevationMeters: 5,
+    useElevation: true,
   },
   {
     id: 'seed:new-york',
@@ -59,6 +69,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: -74.006,
     timezoneId: 'America/New_York',
     elevationMeters: 10,
+    useElevation: true,
   },
   {
     id: 'seed:lakewood',
@@ -68,6 +79,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: -74.2179,
     timezoneId: 'America/New_York',
     elevationMeters: 16,
+    useElevation: true,
   },
   {
     id: 'seed:los-angeles',
@@ -77,6 +89,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: -118.2437,
     timezoneId: 'America/Los_Angeles',
     elevationMeters: 71,
+    useElevation: true,
   },
   {
     id: 'seed:chicago',
@@ -86,6 +99,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: -87.6298,
     timezoneId: 'America/Chicago',
     elevationMeters: 181,
+    useElevation: true,
   },
   {
     id: 'seed:miami',
@@ -95,6 +109,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: -80.1918,
     timezoneId: 'America/New_York',
     elevationMeters: 2,
+    useElevation: true,
   },
   {
     // No daylight saving - PRD 35.3 requires one.
@@ -105,6 +120,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: -112.074,
     timezoneId: 'America/Phoenix',
     elevationMeters: 331,
+    useElevation: true,
   },
   {
     id: 'seed:toronto',
@@ -114,6 +130,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: -79.3832,
     timezoneId: 'America/Toronto',
     elevationMeters: 76,
+    useElevation: true,
   },
   {
     id: 'seed:london',
@@ -123,6 +140,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: -0.1278,
     timezoneId: 'Europe/London',
     elevationMeters: 11,
+    useElevation: true,
   },
   {
     id: 'seed:manchester',
@@ -132,6 +150,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: -2.2426,
     timezoneId: 'Europe/London',
     elevationMeters: 38,
+    useElevation: true,
   },
   {
     id: 'seed:paris',
@@ -141,6 +160,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: 2.3522,
     timezoneId: 'Europe/Paris',
     elevationMeters: 35,
+    useElevation: true,
   },
   {
     id: 'seed:antwerp',
@@ -150,6 +170,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: 4.4025,
     timezoneId: 'Europe/Brussels',
     elevationMeters: 7,
+    useElevation: true,
   },
   {
     id: 'seed:melbourne',
@@ -159,6 +180,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: 144.9631,
     timezoneId: 'Australia/Melbourne',
     elevationMeters: 31,
+    useElevation: true,
   },
   {
     id: 'seed:sydney',
@@ -168,6 +190,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: 151.2093,
     timezoneId: 'Australia/Sydney',
     elevationMeters: 19,
+    useElevation: true,
   },
   {
     id: 'seed:johannesburg',
@@ -177,6 +200,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: 28.0473,
     timezoneId: 'Africa/Johannesburg',
     elevationMeters: 1753,
+    useElevation: true,
   },
   {
     id: 'seed:buenos-aires',
@@ -186,6 +210,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: -58.3816,
     timezoneId: 'America/Argentina/Buenos_Aires',
     elevationMeters: 25,
+    useElevation: true,
   },
   {
     id: 'seed:mexico-city',
@@ -195,6 +220,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: -99.1332,
     timezoneId: 'America/Mexico_City',
     elevationMeters: 2240,
+    useElevation: true,
   },
   {
     id: 'seed:moscow',
@@ -204,6 +230,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: 37.6173,
     timezoneId: 'Europe/Moscow',
     elevationMeters: 156,
+    useElevation: true,
   },
   {
     id: 'seed:anchorage',
@@ -213,6 +240,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: -149.9003,
     timezoneId: 'America/Anchorage',
     elevationMeters: 31,
+    useElevation: true,
   },
   {
     // Above the Arctic Circle: the sun does not set in midsummer, and does not
@@ -224,6 +252,7 @@ export const SEED_LOCATIONS: CalculationLocation[] = [
     longitude: 18.9553,
     timezoneId: 'Europe/Oslo',
     elevationMeters: 10,
+    useElevation: true,
   },
 ];
 
@@ -254,6 +283,39 @@ export function searchSeedLocations(query: string, limit = 10): CalculationLocat
 
 export function getSeedLocation(id: string): CalculationLocation | undefined {
   return byId.get(id);
+}
+
+/** A sea-level copy of a location, for comparing against published tables. */
+export function atSeaLevel(location: CalculationLocation): CalculationLocation {
+  return { ...location, useElevation: false };
+}
+
+/**
+ * Best guess at a calculation location from an IANA time zone.
+ *
+ * Used at setup to pre-select something sensible from the browser's zone (or,
+ * later, from the destination calendar's zone) so that the common case needs no
+ * searching. It is only ever a *suggestion*: the resolved place name is shown
+ * and the user can change it, because a time zone covers a lot of ground and
+ * sunset differs measurably across one.
+ *
+ * Returns `undefined` rather than a wrong guess when nothing in the catalogue
+ * shares the zone.
+ */
+export function suggestLocationForTimezone(
+  timezoneId: string | undefined,
+): CalculationLocation | undefined {
+  if (!timezoneId) return undefined;
+  const exact = SEED_LOCATIONS.filter((location) => location.timezoneId === timezoneId);
+  if (exact.length > 0) return exact[0];
+
+  // Fall back to the same region, e.g. an unknown "America/Detroit" lands on a
+  // catalogue city in the Americas rather than on Jerusalem.
+  const region = timezoneId.split('/')[0];
+  const sameRegion = SEED_LOCATIONS.filter(
+    (location) => location.timezoneId.split('/')[0] === region,
+  );
+  return sameRegion[0];
 }
 
 /** Built-in provider used by the Phase 1 prototype. */

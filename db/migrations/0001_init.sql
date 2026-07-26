@@ -34,6 +34,16 @@ CREATE TABLE calendar_profiles (
   display_mode     text NOT NULL DEFAULT 'exact_sunset'
                      CHECK (display_mode IN ('exact_sunset', 'two_day_all_day')),
   default_language text NOT NULL DEFAULT 'en' CHECK (default_language IN ('en', 'he')),
+  -- Dates of death on a calendar that might be shared or displayed at work is a
+  -- real privacy footgun, so events default to private visibility. The user can
+  -- relax it per calendar.
+  event_visibility text NOT NULL DEFAULT 'private'
+                     CHECK (event_visibility IN ('private', 'calendar_default')),
+  -- What pausing a source record does to its already-synced future events.
+  -- Default: hide them (delete from the destination, keep the rows) rather than
+  -- destroy the record's history.
+  pause_behaviour  text NOT NULL DEFAULT 'hide_future_events'
+                     CHECK (pause_behaviour IN ('hide_future_events', 'keep_events')),
   active           boolean NOT NULL DEFAULT true,
   created_at       timestamptz NOT NULL DEFAULT now(),
   updated_at       timestamptz NOT NULL DEFAULT now()
@@ -55,7 +65,9 @@ CREATE TABLE calendar_locations (
   latitude            numeric(9, 6) NOT NULL CHECK (latitude BETWEEN -90 AND 90),
   longitude           numeric(9, 6) NOT NULL CHECK (longitude BETWEEN -180 AND 180),
   elevation_meters    integer,
-  use_elevation       boolean NOT NULL DEFAULT false,
+  -- Product decision: apply elevation. Stored explicitly rather than assumed, so
+  -- the calculation is reproducible from the row alone.
+  use_elevation       boolean NOT NULL DEFAULT true,
   timezone_id         text NOT NULL,
   geocoder_place_id   text,
   created_at          timestamptz NOT NULL DEFAULT now(),
@@ -85,8 +97,11 @@ CREATE TABLE source_records (
   original_gregorian_date     date,
   sunset_status               text CHECK (sunset_status IN ('before_sunset', 'after_sunset')),
 
+  -- Default: observe an Adar yahrzeit in BOTH Adars of a leap year. This is the
+  -- one convention that yields two occurrences in a single Hebrew year, which is
+  -- what generated_occurrences.sequence exists for.
   calculation_convention      jsonb NOT NULL
-                                DEFAULT '{"adarOrdinaryYahrzeitInLeapYear":"adar_i"}'::jsonb,
+                                DEFAULT '{"adarOrdinaryYahrzeitInLeapYear":"both"}'::jsonb,
   custom_title                text,
   notes                       text,
   display_mode_override       text CHECK (display_mode_override IN ('exact_sunset', 'two_day_all_day')),

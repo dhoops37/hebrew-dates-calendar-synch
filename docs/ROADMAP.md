@@ -12,8 +12,11 @@ phase has an exit criterion that is checkable, not a feeling.
 | **5. Famous yahrzeits** | Curated library + editorial workflow | No record publishable without a source; a correction propagates to future events only |
 | **6. Family and locale** | Sharing, multiple calendars, Hebrew UI | A second family member sees the calendar; the Hebrew interface is usable RTL |
 
-**MVP-complete = Phases 1–3.** Phases 4 and 5 are in the PRD's MVP acceptance
-criteria; moving them out is recommendation §2 of the review.
+**All PRD features are in scope** (decision #1). The phases are the *delivery
+order*, not a scope reduction: each one ships something usable, and the ordering
+puts calculation correctness and idempotent synchronisation before breadth, per
+the PRD's own principle 5.3. Phase 6 additionally carries the family-dataset work
+that decision #18 promoted from "future version" to required.
 
 ---
 

@@ -103,34 +103,103 @@ describe('Adar: birthdays', () => {
   });
 });
 
-describe('Adar: yahrzeits', () => {
-  it('died in Adar of an ordinary year, observed in Adar I of a leap year by default', () => {
+describe('Adar: yahrzeits observed in both Adars (the default)', () => {
+  // 5785 is an ordinary year; 5787 is a leap year with an Adar I and an Adar II.
+  it('produces two observances in a leap year', () => {
     const result = resolved('yahrzeit', { month: 'ADAR', day: 10, year: 5785 }, 5787);
+    expect(result.dates).toHaveLength(2);
+    expect(result.dates[0]?.hebrewDate).toEqual({ year: 5787, month: ADAR_I, day: 10 });
+    expect(result.dates[1]?.hebrewDate).toEqual({ year: 5787, month: ADAR_II, day: 10 });
+    expect(result.dates[0]?.ruleApplied).toBe('ADAR_ORDINARY_TO_ADAR_I');
+    expect(result.dates[1]?.ruleApplied).toBe('ADAR_ORDINARY_TO_ADAR_II');
+  });
+
+  it('gives the two observances distinct, stable sequence numbers', () => {
+    // The sequence feeds the occurrence key, so Adar I must always be 0 and
+    // Adar II always 1 - otherwise an existing calendar event would be re-keyed.
+    const result = resolved('yahrzeit', { month: 'ADAR', day: 10, year: 5785 }, 5787);
+    expect(result.dates.map((date) => date.sequence)).toEqual([0, 1]);
+  });
+
+  it('reports the first Adar as the primary observance', () => {
+    const result = resolved('yahrzeit', { month: 'ADAR', day: 10, year: 5785 }, 5787);
+    expect(result.hebrewDate).toEqual(result.dates[0]?.hebrewDate);
+  });
+
+  it('explains why there are two, on both of them', () => {
+    const result = resolved('yahrzeit', { month: 'ADAR', day: 10, year: 5785 }, 5787);
+    for (const date of result.dates) {
+      expect(date.ambiguities).toHaveLength(1);
+      expect(date.ambiguities[0]?.code).toBe('ADAR_ORDINARY_IN_LEAP_YEAR');
+      expect(date.ambiguities[0]?.explanation).toMatch(/both/i);
+      expect(date.ambiguities[0]?.explanation).toMatch(/consult your rabbi/i);
+    }
+  });
+
+  it('produces exactly one observance in an ordinary year', () => {
+    const result = resolved('yahrzeit', { month: 'ADAR', day: 10, year: 5785 }, 5786);
+    expect(result.dates).toHaveLength(1);
+    expect(result.hebrewDate).toEqual({ year: 5786, month: ADAR_I, day: 10 });
+    expect(result.ambiguities).toEqual([]);
+  });
+
+  it('only ever doubles up for this one case', () => {
+    // Every other origin, in every year of a long horizon, yields one date.
+    const others = [
+      { month: 'NISAN', day: 10 },
+      { month: 'CHESHVAN', day: 30, year: 5783 },
+      { month: 'KISLEV', day: 30, year: 5789 },
+      { month: 'ADAR_I', day: 30, year: 5784 },
+      { month: 'ADAR_II', day: 10, year: 5784 },
+    ] as const;
+    for (const origin of others) {
+      for (let year = 5790; year < 5810; year++) {
+        const result = resolveAnniversary({ kind: 'yahrzeit', origin, targetHebrewYear: year });
+        if (result.status !== 'resolved') continue;
+        expect(result.dates, `${origin.month} in ${year}`).toHaveLength(1);
+      }
+    }
+  });
+});
+
+describe('Adar: yahrzeits under a single-Adar convention', () => {
+  it('honours a stored convention selecting Adar I only', () => {
+    const result = resolved('yahrzeit', { month: 'ADAR', day: 10, year: 5785 }, 5787, {
+      adarOrdinaryYahrzeitInLeapYear: 'adar_i',
+    });
+    expect(result.dates).toHaveLength(1);
     expect(result.hebrewDate).toEqual({ year: 5787, month: ADAR_I, day: 10 });
-    expect(result.ruleApplied).toBe('ADAR_ORDINARY_TO_ADAR_I');
-  });
-
-  it('always flags that case, because communities differ', () => {
-    const result = resolved('yahrzeit', { month: 'ADAR', day: 10, year: 5785 }, 5787);
-    expect(result.ambiguities).toHaveLength(1);
-    expect(result.ambiguities[0]?.code).toBe('ADAR_ORDINARY_IN_LEAP_YEAR');
     expect(result.ambiguities[0]?.alternative).toEqual({ year: 5787, month: ADAR_II, day: 10 });
-    expect(result.ambiguities[0]?.explanation).toMatch(/consult your rabbi/i);
   });
 
-  it('honours a stored convention selecting Adar II', () => {
+  it('honours a stored convention selecting Adar II only', () => {
     const result = resolved('yahrzeit', { month: 'ADAR', day: 10, year: 5785 }, 5787, {
       adarOrdinaryYahrzeitInLeapYear: 'adar_ii',
     });
+    expect(result.dates).toHaveLength(1);
     expect(result.hebrewDate).toEqual({ year: 5787, month: ADAR_II, day: 10 });
     expect(result.ambiguities[0]?.alternative).toEqual({ year: 5787, month: ADAR_I, day: 10 });
   });
 
+  it('flags the case whichever single Adar is chosen', () => {
+    for (const convention of ['adar_i', 'adar_ii'] as const) {
+      const result = resolved('yahrzeit', { month: 'ADAR', day: 10, year: 5785 }, 5787, {
+        adarOrdinaryYahrzeitInLeapYear: convention,
+      });
+      expect(result.ambiguities).toHaveLength(1);
+      expect(result.ambiguities[0]?.explanation).toMatch(/consult your rabbi/i);
+    }
+  });
+});
+
+describe('Adar: yahrzeits', () => {
   it('differs deliberately from the birthday rule for the same Hebrew date', () => {
     // The documented standard rules are asymmetric here. This test exists so
     // that the asymmetry can never be "fixed" by accident.
     const birthday = resolved('birthday', { month: 'ADAR', day: 10, year: 5785 }, 5787);
-    const yahrzeit = resolved('yahrzeit', { month: 'ADAR', day: 10, year: 5785 }, 5787);
+    const yahrzeit = resolved('yahrzeit', { month: 'ADAR', day: 10, year: 5785 }, 5787, {
+      adarOrdinaryYahrzeitInLeapYear: 'adar_i',
+    });
     expect(birthday.hebrewDate.month).toBe(ADAR_II);
     expect(yahrzeit.hebrewDate.month).toBe(ADAR_I);
   });
@@ -275,8 +344,15 @@ describe('input validation', () => {
  * The engine re-implements them in order to support unknown origin years, to
  * report which rule fired, and to refuse undecidable cases - but for every
  * input @hebcal can also handle, the answers must be identical.
+ *
+ * The comparison pins the `adar_i` convention, because that is the rule @hebcal
+ * implements. The default `both` convention *adds* an Adar II observance rather
+ * than moving the Adar I one, so `dates[0]` still matches - but stating the
+ * convention makes what is being compared explicit.
  */
 describe('agreement with @hebcal for known origin years', () => {
+  const STANDARD_CONVENTION = { adarOrdinaryYahrzeitInLeapYear: 'adar_i' } as const;
+
   const originMonths: HebrewMonthName[] = [
     'TISHREI',
     'CHESHVAN',
@@ -327,7 +403,12 @@ describe('agreement with @hebcal for known origin years', () => {
               `birthday ${day} ${month} ${originYear} -> ${targetYear}`,
             ).toEqual({ y: expectedBirthday!.yy, m: expectedBirthday!.mm, d: expectedBirthday!.dd });
 
-            const actualYahrzeit = resolved('yahrzeit', origin, targetYear).hebrewDate;
+            const actualYahrzeit = resolved(
+              'yahrzeit',
+              origin,
+              targetYear,
+              STANDARD_CONVENTION,
+            ).hebrewDate;
             expect(
               { y: actualYahrzeit.year, m: actualYahrzeit.month, d: actualYahrzeit.day },
               `yahrzeit ${day} ${month} ${originYear} -> ${targetYear}`,

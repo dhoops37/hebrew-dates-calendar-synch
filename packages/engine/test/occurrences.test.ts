@@ -259,6 +259,129 @@ describe('edge-case dates over the whole horizon', () => {
   });
 });
 
+describe('a yahrzeit observed in both Adars', () => {
+  function bothAdars(count = 20) {
+    const result = generateOccurrences({
+      sourceRecordId: 'record-adar',
+      type: 'personal_yahrzeit',
+      displayName: 'Zayde',
+      // Died 10 Adar 5785, an ordinary year.
+      origin: { month: 'ADAR', day: 10, year: 5785 },
+      location: jerusalem,
+      displayMode: 'exact_sunset',
+      count,
+      nowEpochMs: NOW,
+    });
+    if (result.status !== 'ok') throw new Error('expected occurrences');
+    return result;
+  }
+
+  it('still covers the promised twenty Hebrew years', () => {
+    // `count` is a number of years, not of occurrences.
+    const result = bothAdars();
+    expect(result.hebrewYearsGenerated).toBe(20);
+    expect(new Set(result.occurrences.map((o) => o.hebrewYear)).size).toBe(20);
+  });
+
+  it('adds one extra occurrence for each leap year in the horizon', () => {
+    const result = bothAdars();
+    const leapYears = [...new Set(result.occurrences.map((o) => o.hebrewYear))].filter((year) =>
+      result.occurrences.filter((o) => o.hebrewYear === year).length === 2,
+    );
+    // Seven leap years in every nineteen, so six to eight in a twenty-year window.
+    expect(leapYears.length).toBeGreaterThanOrEqual(6);
+    expect(leapYears.length).toBeLessThanOrEqual(8);
+    expect(result.occurrences).toHaveLength(20 + leapYears.length);
+  });
+
+  it('places the pair in Adar I and Adar II, in chronological order', () => {
+    const result = bothAdars();
+    const paired = result.occurrences.filter(
+      (o) => result.occurrences.filter((x) => x.hebrewYear === o.hebrewYear).length === 2,
+    );
+    for (let i = 0; i < paired.length; i += 2) {
+      const first = paired[i]!;
+      const second = paired[i + 1]!;
+      expect(first.hebrewYear).toBe(second.hebrewYear);
+      expect(first.hebrewDate.month).toBe(HEBREW_MONTH_NUMBER.ADAR_I);
+      expect(second.hebrewDate.month).toBe(HEBREW_MONTH_NUMBER.ADAR_II);
+      expect(civilToAbsolute(first.gregorianDate)).toBeLessThan(
+        civilToAbsolute(second.gregorianDate),
+      );
+      // About a month apart: Adar I always has 30 days.
+      const gap =
+        civilToAbsolute(second.gregorianDate) - civilToAbsolute(first.gregorianDate);
+      expect(gap).toBe(30);
+    }
+  });
+
+  it('gives the two observances different keys, sequences and event IDs', () => {
+    const result = bothAdars();
+    const pair = result.occurrences.filter(
+      (o) => result.occurrences.filter((x) => x.hebrewYear === o.hebrewYear).length === 2,
+    );
+    expect(pair.length).toBeGreaterThan(0);
+    const [first, second] = pair as [Occurrence, Occurrence];
+    expect(first.sequence).toBe(0);
+    expect(second.sequence).toBe(1);
+    expect(first.key).not.toBe(second.key);
+    expect(first.googleEventId).not.toBe(second.googleEventId);
+    // Every key in the whole horizon is still unique.
+    expect(new Set(result.occurrences.map((o) => o.key)).size).toBe(result.occurrences.length);
+  });
+
+  it('distinguishes the two in the event title', () => {
+    const result = bothAdars();
+    const pair = result.occurrences.filter(
+      (o) => result.occurrences.filter((x) => x.hebrewYear === o.hebrewYear).length === 2,
+    );
+    const [first, second] = pair as [Occurrence, Occurrence];
+    expect(first.title).toContain('10 Adar I');
+    expect(second.title).toContain('10 Adar II');
+  });
+
+  it('keeps every occurrence in chronological order overall', () => {
+    let previous = -Infinity;
+    for (const occurrence of bothAdars().occurrences) {
+      const abs = civilToAbsolute(occurrence.gregorianDate);
+      expect(abs).toBeGreaterThan(previous);
+      previous = abs;
+    }
+  });
+
+  it('collapses to one observance per year under a single-Adar convention', () => {
+    const result = generateOccurrences({
+      sourceRecordId: 'record-adar',
+      type: 'personal_yahrzeit',
+      displayName: 'Zayde',
+      origin: { month: 'ADAR', day: 10, year: 5785 },
+      location: jerusalem,
+      displayMode: 'exact_sunset',
+      count: 20,
+      nowEpochMs: NOW,
+      conventions: { adarOrdinaryYahrzeitInLeapYear: 'adar_ii' },
+    });
+    if (result.status !== 'ok') throw new Error('expected occurrences');
+    expect(result.occurrences).toHaveLength(20);
+    expect(result.occurrences.every((o) => o.sequence === 0)).toBe(true);
+  });
+
+  it('does not double up birthdays, only yahrzeits', () => {
+    const result = generateOccurrences({
+      sourceRecordId: 'record-birthday',
+      type: 'birthday',
+      displayName: 'Adar child',
+      origin: { month: 'ADAR', day: 10, year: 5785 },
+      location: jerusalem,
+      displayMode: 'exact_sunset',
+      count: 20,
+      nowEpochMs: NOW,
+    });
+    if (result.status !== 'ok') throw new Error('expected occurrences');
+    expect(result.occurrences).toHaveLength(20);
+  });
+});
+
 describe('manual overrides (PRD 17.1)', () => {
   it('uses the override for the given Hebrew year and marks it', () => {
     const override = { year: 5787, month: HEBREW_MONTH_NUMBER.ADAR_I, day: 10 };

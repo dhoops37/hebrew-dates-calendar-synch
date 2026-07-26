@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { classifyPolarDay, formatInZone, sunsetOn } from '../src/sunset';
-import { getSeedLocation, SEED_LOCATIONS } from '../src/locations';
+import {
+  atSeaLevel,
+  getSeedLocation,
+  SEED_LOCATIONS,
+  suggestLocationForTimezone,
+} from '../src/locations';
 import { SUNSET_REFERENCES } from './fixtures/golden-dates';
 import type { CalculationLocation, CivilDate } from '../src/types';
 
@@ -29,10 +34,15 @@ function requireLocation(id: string): CalculationLocation {
 describe('sunset against independently published times (PRD 35.3)', () => {
   // Published tables round to the minute and differ slightly on the exact
   // coordinates of a "city", so agreement is asserted to within two minutes.
+  //
+  // These are all *sea-level* figures, which is what almost every published
+  // table gives, so the comparison pins `useElevation: false` explicitly. The
+  // seed catalogue itself now defaults to elevation-on, which is checked
+  // separately below.
   it.each(SUNSET_REFERENCES)(
-    '$locationId on $date sets around $expectedLocalTime ($note)',
+    '$locationId on $date sets around $expectedLocalTime at sea level ($note)',
     ({ locationId, date, expectedLocalTime }) => {
-      const location = requireLocation(locationId);
+      const location = atSeaLevel(requireLocation(locationId));
       const result = sunsetOn(location, parseDate(date));
       expect(result.status).toBe('ok');
       if (result.status !== 'ok') return;
@@ -47,7 +57,11 @@ describe('sunset against independently published times (PRD 35.3)', () => {
   );
 
   it('returns an RFC 3339 string carrying the location offset, not a floating time', () => {
-    const result = sunsetOn(requireLocation('seed:new-york'), { year: 2024, month: 6, day: 20 });
+    const result = sunsetOn(atSeaLevel(requireLocation('seed:new-york')), {
+      year: 2024,
+      month: 6,
+      day: 20,
+    });
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
     expect(result.iso).toMatch(/^2024-06-20T20:30:\d\d-04:00$/);
@@ -129,9 +143,19 @@ describe('places where the sun does not set', () => {
 });
 
 describe('elevation', () => {
-  it('is ignored by default and applied when the location opts in', () => {
-    const seaLevel = requireLocation('seed:jerusalem');
-    const withElevation: CalculationLocation = { ...seaLevel, useElevation: true };
+  it('is applied by default for every seed location that has an elevation', () => {
+    // The product decision is elevation-on. It is set explicitly on the data
+    // rather than defaulted in code, so that what was applied is always visible
+    // in the calculation snapshot.
+    for (const location of SEED_LOCATIONS) {
+      if (location.elevationMeters === undefined) continue;
+      expect(location.useElevation, location.displayName).toBe(true);
+    }
+  });
+
+  it('moves sunset measurably later than the sea-level figure', () => {
+    const withElevation = requireLocation('seed:jerusalem');
+    const seaLevel = atSeaLevel(withElevation);
     const date = { year: 2024, month: 6, day: 20 };
 
     const a = sunsetOn(seaLevel, date);
@@ -140,13 +164,50 @@ describe('elevation', () => {
     expect(b.status).toBe('ok');
     if (a.status !== 'ok' || b.status !== 'ok') return;
 
-    // Higher ground sees the sun set later. Jerusalem at ~750m gains minutes,
-    // which is why `useElevation` is part of the calculation snapshot rather
-    // than a display preference.
+    // Higher ground sees the sun set later. Jerusalem at ~750 m gains about five
+    // minutes, which is why `useElevation` belongs in the calculation snapshot
+    // and not in display preferences: flipping it moves real calendar events.
     expect(b.epochMs).toBeGreaterThan(a.epochMs);
     const differenceMinutes = (b.epochMs - a.epochMs) / 60000;
     expect(differenceMinutes).toBeGreaterThan(3);
     expect(differenceMinutes).toBeLessThan(8);
+  });
+
+  it('makes no difference at a location that is at sea level anyway', () => {
+    const telAviv = requireLocation('seed:tel-aviv'); // 5 m
+    const date = { year: 2024, month: 6, day: 20 };
+    const a = sunsetOn(atSeaLevel(telAviv), date);
+    const b = sunsetOn(telAviv, date);
+    if (a.status !== 'ok' || b.status !== 'ok') throw new Error('expected sunsets');
+    expect(Math.abs(b.epochMs - a.epochMs) / 1000).toBeLessThan(30);
+  });
+
+  it('records the flag on the snapshot either way', () => {
+    const location: CalculationLocation = requireLocation('seed:jerusalem');
+    expect(location.useElevation).toBe(true);
+    expect(atSeaLevel(location).useElevation).toBe(false);
+    // The elevation value itself is retained even when unused, so a later
+    // change of mind can be recalculated without re-geocoding.
+    expect(atSeaLevel(location).elevationMeters).toBe(location.elevationMeters);
+  });
+});
+
+describe('suggesting a location from a time zone (setup convenience)', () => {
+  it('finds a catalogue city in the same zone', () => {
+    expect(suggestLocationForTimezone('Asia/Jerusalem')?.timezoneId).toBe('Asia/Jerusalem');
+    expect(suggestLocationForTimezone('America/New_York')?.timezoneId).toBe('America/New_York');
+    expect(suggestLocationForTimezone('Australia/Melbourne')?.id).toBe('seed:melbourne');
+  });
+
+  it('falls back to the same region rather than guessing wildly', () => {
+    // An unlisted US zone should not land the user in Jerusalem.
+    const suggestion = suggestLocationForTimezone('America/Detroit');
+    expect(suggestion?.timezoneId.startsWith('America/')).toBe(true);
+  });
+
+  it('returns nothing rather than a wrong guess for an unknown region', () => {
+    expect(suggestLocationForTimezone('Antarctica/Vostok')).toBeUndefined();
+    expect(suggestLocationForTimezone(undefined)).toBeUndefined();
   });
 });
 

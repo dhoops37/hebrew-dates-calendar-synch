@@ -190,15 +190,25 @@ export type RuleId =
 export interface CalculationConventions {
   /**
    * A yahrzeit for someone who died in Adar of an ordinary year, observed in a
-   * leap year. The standard calendrical rule (Reingold & Dershowitz) places it
-   * in Adar I. Many communities observe Adar II, and some observe both.
-   * "both" is deliberately not offered in the MVP - see docs/DATA-MODEL.md.
+   * leap year that has two Adars.
+   *
+   * - `both`    - observe it in Adar I *and* Adar II. This is the default: it is
+   *               a widespread custom, and it is the only option that cannot
+   *               cause a yahrzeit to be missed. It is the one case where a
+   *               single Hebrew year yields two occurrences, which is why
+   *               `sequence` exists in the occurrence key.
+   * - `adar_i`  - the standard calendrical rule (Reingold & Dershowitz), which
+   *               keeps the month number and therefore lands in Adar I.
+   * - `adar_ii` - the practice in many communities.
+   *
+   * Whichever is chosen, the affected years are flagged for the user with an
+   * explanation, and the record can be switched at any time.
    */
-  adarOrdinaryYahrzeitInLeapYear: 'adar_i' | 'adar_ii';
+  adarOrdinaryYahrzeitInLeapYear: 'both' | 'adar_i' | 'adar_ii';
 }
 
 export const DEFAULT_CONVENTIONS: CalculationConventions = {
-  adarOrdinaryYahrzeitInLeapYear: 'adar_i',
+  adarOrdinaryYahrzeitInLeapYear: 'both',
 };
 
 /** Why the engine stopped and asked the user instead of choosing. */

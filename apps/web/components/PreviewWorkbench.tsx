@@ -56,6 +56,21 @@ function exportUrl(request: PreviewRequest): string {
   return `/api/export.ics?${params.toString()}`;
 }
 
+/**
+ * Mirror of the engine's `suggestLocationForTimezone`, applied to the catalogue
+ * the server already sent, so no extra round trip is needed to pre-select.
+ */
+function suggestedLocationId(
+  locations: CalculationLocation[],
+  timezoneId: string | undefined,
+): string | undefined {
+  if (!timezoneId) return undefined;
+  const exact = locations.find((location) => location.timezoneId === timezoneId);
+  if (exact) return exact.id;
+  const region = timezoneId.split('/')[0];
+  return locations.find((location) => location.timezoneId.split('/')[0] === region)?.id;
+}
+
 export default function PreviewWorkbench({ locations, months }: Props) {
   const [locationId, setLocationId] = useState(locations[0]?.id ?? '');
   const [type, setType] = useState<SourceRecordType>('birthday');
@@ -69,8 +84,10 @@ export default function PreviewWorkbench({ locations, months }: Props) {
   const [sunsetStatus, setSunsetStatus] = useState<'before_sunset' | 'after_sunset' | 'unknown'>(
     'unknown',
   );
+  const [adarConvention, setAdarConvention] = useState<'both' | 'adar_i' | 'adar_ii'>('both');
   const [response, setResponse] = useState<PreviewResponse | null>(null);
   const [pending, setPending] = useState(false);
+  const [detectedZone, setDetectedZone] = useState<string | null>(null);
 
   const request = useMemo<PreviewRequest>(
     () => ({
@@ -78,6 +95,7 @@ export default function PreviewWorkbench({ locations, months }: Props) {
       type,
       displayName,
       displayMode,
+      adarConvention,
       entryMode,
       hebrewMonth,
       hebrewDay,
@@ -91,6 +109,7 @@ export default function PreviewWorkbench({ locations, months }: Props) {
       type,
       displayName,
       displayMode,
+      adarConvention,
       entryMode,
       hebrewMonth,
       hebrewDay,
@@ -119,12 +138,22 @@ export default function PreviewWorkbench({ locations, months }: Props) {
     }
   }, []);
 
-  // Preview on load, and whenever the display mode changes, so switching
-  // between the two display modes is immediate.
+  // Pre-select a location from the browser's time zone. In Phase 2 the
+  // destination calendar's own zone is the better signal and takes precedence;
+  // this is the fallback, and it is only ever a suggestion the user can change.
+  useEffect(() => {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const suggested = suggestedLocationId(locations, zone);
+    if (suggested) setLocationId(suggested);
+    setDetectedZone(zone);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Preview on load, and whenever a setting that changes the result changes.
   useEffect(() => {
     void runPreview(request);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayMode]);
+  }, [displayMode, adarConvention, locationId]);
 
   const selectedLocation = locations.find((location) => location.id === locationId);
 
@@ -156,8 +185,16 @@ export default function PreviewWorkbench({ locations, months }: Props) {
                 {selectedLocation.latitude.toFixed(4)}, {selectedLocation.longitude.toFixed(4)} ·{' '}
                 {selectedLocation.timezoneId}
                 {selectedLocation.elevationMeters !== undefined
-                  ? ` · ${selectedLocation.elevationMeters} m (sea-level sunset used)`
+                  ? ` · ${selectedLocation.elevationMeters} m${
+                      selectedLocation.useElevation ? ' (elevation applied)' : ' (sea level)'
+                    }`
                   : ''}
+              </p>
+            ) : null}
+            {detectedZone ? (
+              <p className="hint">
+                Pre-selected from your device time zone ({detectedZone}). Change it if your
+                calculation location is elsewhere — sunset varies across a time zone.
               </p>
             ) : null}
           </div>
@@ -222,6 +259,37 @@ export default function PreviewWorkbench({ locations, months }: Props) {
               </label>
             </div>
           </fieldset>
+
+          {type === 'personal_yahrzeit' ? (
+            <fieldset>
+              <legend>In a Hebrew leap year, which Adar?</legend>
+              <p className="hint" style={{ marginBlockEnd: 8 }}>
+                Only applies to a yahrzeit in Adar. A leap year has two Adars, and customs differ.
+              </p>
+              <div
+                className="radio-row"
+                style={{ flexDirection: 'column', alignItems: 'flex-start' }}
+              >
+                {(
+                  [
+                    ['both', 'Both Adars — default'],
+                    ['adar_i', 'Adar I only (standard calendar rule)'],
+                    ['adar_ii', 'Adar II only'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <label key={value}>
+                    <input
+                      type="radio"
+                      name="adarConvention"
+                      checked={adarConvention === value}
+                      onChange={() => setAdarConvention(value)}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          ) : null}
 
           {entryMode === 'hebrew' ? (
             <>
@@ -435,8 +503,13 @@ function Results({
           <dd>{displayMode === 'exact_sunset' ? 'Exact sunset' : 'Two-day all-day'}</dd>
         </div>
         <div>
-          <dt>Years generated</dt>
-          <dd>{occurrences.length}</dd>
+          <dt>Hebrew years generated</dt>
+          <dd>
+            {response.hebrewYearsGenerated}
+            {occurrences.length !== response.hebrewYearsGenerated
+              ? ` (${occurrences.length} events)`
+              : ''}
+          </dd>
         </div>
       </dl>
 
@@ -462,7 +535,8 @@ function Results({
         <table>
           <caption className="hint" style={{ captionSide: 'bottom', textAlign: 'start' }}>
             Each row is an individually generated occurrence with its own stable identifier. No
-            Gregorian yearly recurrence rule is used.
+            Gregorian yearly recurrence rule is used. A Hebrew year marked “1 of 2” has two
+            observances because the record is set to observe both Adars.
           </caption>
           <thead>
             <tr>
@@ -492,6 +566,10 @@ function Results({
                 key={occurrence.key}
                 occurrence={occurrence}
                 displayMode={displayMode}
+                isPaired={
+                  occurrences.filter((other) => other.hebrewYear === occurrence.hebrewYear).length >
+                  1
+                }
               />
             ))}
           </tbody>
@@ -531,16 +609,26 @@ function Results({
 function OccurrenceRow({
   occurrence,
   displayMode,
+  isPaired,
 }: {
   occurrence: Occurrence;
   displayMode: DisplayMode;
+  /** True when this Hebrew year holds two observances, as with both Adars. */
+  isPaired: boolean;
 }) {
   const flagged = occurrence.ambiguities.length > 0;
   const noSunset = occurrence.timing === null;
 
   return (
     <tr>
-      <td>{occurrence.hebrewYear}</td>
+      <td>
+        {occurrence.hebrewYear}
+        {isPaired ? (
+          <div className="mono" title="This Hebrew year has two observances">
+            {occurrence.sequence + 1} of 2
+          </div>
+        ) : null}
+      </td>
       <td className="wrap">
         {occurrence.labels.en}{' '}
         {flagged ? <span className="flag">review</span> : null}

@@ -15,7 +15,7 @@ calendar.
 
 ```bash
 pnpm install
-pnpm test        # 232 tests, ~2s
+pnpm test        # 252 tests, ~2s
 pnpm dev         # http://localhost:3000
 ```
 
@@ -57,6 +57,7 @@ docs/              review, architecture, data model, calculation rules, roadmap
 
 | Document | What it covers |
 |---|---|
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Product decisions taken, and what each one changed in the code or schema |
 | [`docs/PRD-REVIEW.md`](docs/PRD-REVIEW.md) | Contradictions, security risks and scope recommendations, with the empirical findings behind them |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The stack, the sync model, and the decisions awaiting sign-off before Phase 2 |
 | [`docs/DATA-MODEL.md`](docs/DATA-MODEL.md) | Schema, constraints that encode product rules, and the migration plan |

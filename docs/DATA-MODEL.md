@@ -60,7 +60,7 @@ calendar_locations
   latitude            numeric(9,6) not null           -- check -90..90
   longitude           numeric(9,6) not null           -- check -180..180
   elevation_meters    integer
-  use_elevation       boolean not null default false  -- ADDED, see §3.3
+  use_elevation       boolean not null default true   -- ADDED, see §3.3
   timezone_id         text not null                   -- IANA, e.g. Asia/Jerusalem
   geocoder_place_id   text
   created_at, updated_at
@@ -115,7 +115,7 @@ source_records
   original_hebrew_year    integer                  -- conditionally required, see §3.2
   original_gregorian_date date
   sunset_status           text                     -- 'before_sunset'|'after_sunset'|null
-  calculation_convention  jsonb not null default '{"adarOrdinaryYahrzeitInLeapYear":"adar_i"}'
+  calculation_convention  jsonb not null default '{"adarOrdinaryYahrzeitInLeapYear":"both"}'
   custom_title            text
   notes                   text
   display_mode_override   text
@@ -222,9 +222,9 @@ famous-yahrzeit records and PRD 33 requires change history.
 |---|---|---|
 | 3.1 | `source_records.hebrew_month` stores a **name**, not a number | Month 12 is Adar in an ordinary year and Adar I in a leap year, and the anniversary rules branch on which the user meant. A number loses that. `PRD-REVIEW.md` §1.2 |
 | 3.2 | `original_hebrew_year` is conditionally required by CHECK constraint | Two yahrzeit rules depend on the character of the year after the death. §1.1 |
-| 3.3 | `use_elevation` added to locations | Elevation moves Jerusalem sunset by ~5 minutes; whether it was applied must be part of the reproducible calculation snapshot. §1.6 |
+| 3.3 | `use_elevation` added to locations, **defaulting to true** | Elevation moves Jerusalem sunset by ~5 minutes; whether it was applied must be part of the reproducible calculation snapshot. §1.6, decision #8 |
 | 3.4 | `horizon_through_hebrew_year` on the source record | The rolling-horizon job needs a per-record, indexable predicate. §4.3 |
-| 3.5 | `sequence` added to the occurrence key | Leaves room for a convention that observes a date twice in one Hebrew year without re-keying every event. §1.4 |
+| 3.5 | `sequence` added to the occurrence key | **Now in use**, not merely reserved: the default convention observes an Adar yahrzeit in both Adars, so a leap year holds two occurrences. Adar I is always sequence 0. §1.4, decision #4 |
 | 3.6 | `occurrence_key` and `content_hash` are stored, not derived | They are the idempotency contract; storing them makes a mismatch detectable rather than merely unlikely |
 | 3.7 | `rule_applied` and `ambiguities` stored per occurrence | PRD 5.4 promises the user can see "the rule used for unusual Hebrew-calendar cases". That requires persisting it. |
 | 3.8 | `encryption_key_id` on the Google connection | Envelope encryption is only useful if keys can be rotated |
@@ -257,7 +257,57 @@ Rules the project holds itself to:
 4. **No `DROP COLUMN` in the same release that stops writing it.** Two releases,
    minimum, so a rollback does not lose data.
 
-## 5. Authorisation
+## 5. The family-dataset change (decision #18)
+
+One family dataset must populate several members' individual calendars, and
+those members may be in different cities. That breaks the current assumption of
+one location per dataset, and it is far cheaper to restructure before any real
+events exist.
+
+**What breaks.** `generated_occurrences` currently stores sunset instants and a
+location snapshot, because there is one location per calendar. Two members in two
+cities need two different sunset windows for what is still *one* anniversary.
+
+**The fix: separate what depends on location from what does not.**
+
+| Layer | Holds | Location-dependent? |
+|---|---|---|
+| `source_records` | what the user entered | no |
+| `generated_occurrences` | Hebrew date, Gregorian date, `rule_applied`, `ambiguities`, `sequence` | **no** |
+| `destination_calendars` *(new)* | one member's calendar: destination type, location, display mode, reminders, visibility | — |
+| `destination_events` | `start_at`, `end_at`, title, description, `content_hash`, external event ID | **yes** |
+
+So `start_at`, `end_at`, `timezone_id` and `location_snapshot` move from
+`generated_occurrences` to `destination_events`, and `calendar_locations` hangs
+off `destination_calendars` rather than off the profile. A family of four in four
+cities then has **one** set of occurrences and four sets of events, and the
+Hebrew-date reasoning happens exactly once.
+
+Two further consequences:
+
+- `destination_events` is keyed `UNIQUE (generated_occurrence_id,
+  destination_calendar_id)` rather than by `destination_type`, so one occurrence
+  can legitimately reach several calendars.
+- The dataset owner must be an **entity**, not a `user_id`, so that decision #19
+  (synagogues and organisations) does not require another migration. A household
+  and an organisation are both owners; membership is a join table.
+
+**Engine consequence**, scheduled as the next change:
+
+```ts
+// today — fuses the two concerns
+generateOccurrences({ origin, location, displayMode, count }) → Occurrence[]
+
+// next  — split, so one dataset serves many destinations
+resolveOccurrences({ origin, count })                 → HebrewOccurrence[]
+renderForDestination(occurrence, destinationCalendar)  → DestinationEvent
+```
+
+No rule changes are involved: `resolveAnniversary` is already
+location-independent and `sunsetOn` is already separate. It is a re-seam of
+`occurrences.ts`, which is why it belongs before Phase 2 persistence, not after.
+
+## 6. Authorisation
 
 Every row above is reachable from exactly one `calendar_profiles.id`, and every
 query in the application filters on a profile resolved from the session — never

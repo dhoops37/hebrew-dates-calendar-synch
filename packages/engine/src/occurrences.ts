@@ -55,7 +55,11 @@ export interface GenerateOccurrencesInput {
   origin: AnniversaryOrigin;
   location: CalculationLocation;
   displayMode: DisplayMode;
-  /** How many future Hebrew years to materialise. The MVP horizon is 20. */
+  /**
+   * How many future Hebrew *years* to materialise. The MVP horizon is 20.
+   * Not a count of occurrences: a record observed in both Adars produces two
+   * occurrences in a leap year while still covering one year of the horizon.
+   */
   count: number;
   /** Injected for testability; defaults to the current time. */
   nowEpochMs?: number;
@@ -72,6 +76,11 @@ export interface Occurrence {
   /** Deterministic Google Calendar event ID derived from `key`. */
   googleEventId: string;
   hebrewYear: number;
+  /**
+   * Which observance this is within its Hebrew year. 0 unless the record's
+   * convention observes the date twice, as with both Adars of a leap year.
+   */
+  sequence: number;
   hebrewDate: HebrewDate;
   labels: HebrewDateLabels;
   /** The Gregorian day on which the Hebrew date's daytime falls. */
@@ -114,6 +123,12 @@ export type OccurrenceWarning =
 export interface GenerateOccurrencesResult {
   status: 'ok';
   occurrences: Occurrence[];
+  /**
+   * How many future Hebrew years were materialised. This is the number the
+   * dashboard reports and the rolling-horizon job checks, and it can be smaller
+   * than `occurrences.length` when a year holds two observances.
+   */
+  hebrewYearsGenerated: number;
   /** True when any occurrence carries an ambiguity the user should review. */
   requiresReview: boolean;
 }
@@ -165,12 +180,15 @@ export function generateOccurrences(
   const todayAbs = hebrewToAbsolute(today);
 
   const occurrences: Occurrence[] = [];
-  let hebrewYear = today.year;
+  // `count` is a number of Hebrew *years*, not of occurrences: a record whose
+  // convention observes both Adars yields two occurrences in a leap year, and
+  // the horizon the user was promised is still twenty years either way.
+  let yearsWithOccurrences = 0;
   // Guard against pathological inputs looping forever.
   const maxYearsScanned = input.count + 5;
 
-  for (let scanned = 0; occurrences.length < input.count && scanned < maxYearsScanned; scanned++) {
-    const targetYear = hebrewYear + scanned;
+  for (let scanned = 0; yearsWithOccurrences < input.count && scanned < maxYearsScanned; scanned++) {
+    const targetYear = today.year + scanned;
     if (origin.year !== undefined) {
       if (kind === 'birthday' && targetYear < origin.year) continue;
       if (kind === 'yahrzeit' && targetYear <= origin.year) continue;
@@ -179,8 +197,13 @@ export function generateOccurrences(
     const override = input.overrides?.[targetYear];
     let resolution: AnniversaryResolution;
     if (override) {
+      // A manual override replaces every observance in that Hebrew year with
+      // the single date the user chose.
       resolution = {
         status: 'resolved',
+        dates: [
+          { hebrewDate: override, sequence: 0, ruleApplied: 'SAME_MONTH_AND_DAY', ambiguities: [] },
+        ],
         hebrewDate: override,
         ruleApplied: 'SAME_MONTH_AND_DAY',
         ambiguities: [],
@@ -195,25 +218,34 @@ export function generateOccurrences(
       if (resolution.status === 'needs_user_decision') return resolution;
     }
 
-    const hebrewDate = resolution.hebrewDate;
-    const abs = hebrewToAbsolute(hebrewDate);
-    // Skip an occurrence whose sunset-to-sunset window has already ended.
-    if (abs < todayAbs) continue;
-
-    occurrences.push(
-      buildOccurrence({
-        input,
-        hebrewDate,
-        ruleApplied: resolution.ruleApplied,
-        ambiguities: resolution.ambiguities,
-        isManualOverride: Boolean(override),
-      }),
-    );
+    let addedThisYear = 0;
+    for (const date of resolution.dates) {
+      // Skip an observance whose sunset-to-sunset window has already ended.
+      if (hebrewToAbsolute(date.hebrewDate) < todayAbs) continue;
+      occurrences.push(
+        buildOccurrence({
+          input,
+          hebrewDate: date.hebrewDate,
+          sequence: date.sequence,
+          ruleApplied: date.ruleApplied,
+          ambiguities: date.ambiguities,
+          isManualOverride: Boolean(override),
+        }),
+      );
+      addedThisYear++;
+    }
+    if (addedThisYear > 0) yearsWithOccurrences++;
   }
+
+  // Two observances in one Hebrew year are resolved in calendar order, but a
+  // year boundary could still interleave them; sort so the caller always sees
+  // chronological order.
+  occurrences.sort((a, b) => civilToAbsolute(a.gregorianDate) - civilToAbsolute(b.gregorianDate));
 
   return {
     status: 'ok',
     occurrences,
+    hebrewYearsGenerated: yearsWithOccurrences,
     requiresReview: occurrences.some((o) => o.ambiguities.length > 0),
   };
 }
@@ -221,11 +253,12 @@ export function generateOccurrences(
 function buildOccurrence(args: {
   input: GenerateOccurrencesInput;
   hebrewDate: HebrewDate;
+  sequence: number;
   ruleApplied: RuleId;
   ambiguities: Ambiguity[];
   isManualOverride: boolean;
 }): Occurrence {
-  const { input, hebrewDate, ruleApplied, ambiguities, isManualOverride } = args;
+  const { input, hebrewDate, sequence, ruleApplied, ambiguities, isManualOverride } = args;
   const abs = hebrewToAbsolute(hebrewDate);
   const gregorianDate = absoluteToCivil(abs);
   const precedingGregorianDate = absoluteToCivil(abs - 1);
@@ -270,6 +303,7 @@ function buildOccurrence(args: {
   const key = occurrenceKey({
     sourceRecordId: input.sourceRecordId,
     hebrewYear: hebrewDate.year,
+    sequence,
   });
 
   const warnings: OccurrenceWarning[] = [];
@@ -290,6 +324,7 @@ function buildOccurrence(args: {
     key,
     googleEventId: googleEventId(key),
     hebrewYear: hebrewDate.year,
+    sequence,
     hebrewDate,
     labels: hebrewDateLabels(hebrewDate),
     gregorianDate,
