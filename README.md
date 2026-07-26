@@ -15,7 +15,7 @@ calendar.
 
 ```bash
 pnpm install
-pnpm test        # 203 engine tests, ~2s
+pnpm test        # 232 tests, ~2s
 pnpm dev         # http://localhost:3000
 ```
 
@@ -25,8 +25,18 @@ The prototype lets you:
 - enter a Hebrew birthday or yahrzeit, or a Gregorian date plus a
   before/after-sunset answer,
 - preview the next 20 Gregorian occurrences,
-- see the exact sunset-to-sunset start and end times, and
-- switch to the two-day all-day display.
+- see the exact sunset-to-sunset start and end times,
+- switch to the two-day all-day display, and
+- **download 50 years as an `.ics` file and import it into a real calendar** —
+  no account, no OAuth, no database.
+
+The `.ics` route is the fastest way to check the output against your own
+calendar and your own knowledge:
+
+```bash
+curl -o david.ics 'http://localhost:3000/api/export.ics?locationId=seed:jerusalem\
+&type=birthday&displayName=David&entryMode=hebrew&hebrewMonth=NISAN&hebrewDay=10&count=50'
+```
 
 Dates where the calendar convention is disputed are flagged rather than decided
 silently, and dates that cannot be resolved without more information are
@@ -36,7 +46,9 @@ refused rather than guessed.
 
 ```
 packages/engine/   the calculation domain — no HTTP, no React, no database
-apps/web/          Next.js prototype UI and preview API
+packages/ical/     RFC 5545 rendering of occurrences (backup export, and the
+                   Phase 4 subscription feed) — no I/O
+apps/web/          Next.js prototype UI, preview API, .ics export
 db/migrations/     reviewed SQL for Phase 2 (not yet applied)
 docs/              review, architecture, data model, calculation rules, roadmap
 ```
@@ -93,7 +105,9 @@ pnpm test
 Covers the golden-date set, leap years, every Adar case, 30 Cheshvan and
 30 Kislev, sunset against independently published times for nine locations,
 daylight-saving transitions in four zones, host-time-zone independence, polar
-latitudes, stable identifiers and content hashing.
+latitudes, stable identifiers and content hashing. The iCalendar suite covers
+RFC 5545 line folding on octet boundaries (Hebrew is multi-byte), text escaping,
+the exclusive all-day end date, alarm durations and UID stability.
 
 The suite runs under `TZ=America/Los_Angeles` deliberately: a UTC-only test run
 hides an entire class of date bugs.

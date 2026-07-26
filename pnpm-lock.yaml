@@ -13,6 +13,9 @@ importers:
       '@hebrew-dates/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@hebrew-dates/ical':
+        specifier: workspace:*
+        version: link:../../packages/ical
       next:
         specifier: ^15.5.4
         version: 15.5.22(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -44,6 +47,22 @@ importers:
       '@hebcal/hdate':
         specifier: ^0.22.5
         version: 0.22.5
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.3
+        version: 22.20.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.1)
+
+  packages/ical:
+    dependencies:
+      '@hebrew-dates/engine':
+        specifier: workspace:*
+        version: link:../engine
     devDependencies:
       '@types/node':
         specifier: ^22.15.3

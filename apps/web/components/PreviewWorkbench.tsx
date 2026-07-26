@@ -32,6 +32,30 @@ interface Props {
   months: HebrewMonthName[];
 }
 
+/**
+ * The export is a GET so it can be a plain download link. Only the fields the
+ * current entry mode actually uses are sent, to keep the URL readable.
+ */
+function exportUrl(request: PreviewRequest): string {
+  const params = new URLSearchParams({
+    locationId: request.locationId,
+    type: request.type,
+    displayName: request.displayName,
+    displayMode: request.displayMode,
+    entryMode: request.entryMode,
+    count: '50',
+  });
+  if (request.entryMode === 'hebrew') {
+    if (request.hebrewMonth) params.set('hebrewMonth', request.hebrewMonth);
+    if (request.hebrewDay) params.set('hebrewDay', String(request.hebrewDay));
+    if (request.hebrewYear) params.set('hebrewYear', String(request.hebrewYear));
+  } else {
+    if (request.gregorianDate) params.set('gregorianDate', request.gregorianDate);
+    if (request.sunsetStatus) params.set('sunsetStatus', request.sunsetStatus);
+  }
+  return `/api/export.ics?${params.toString()}`;
+}
+
 export default function PreviewWorkbench({ locations, months }: Props) {
   const [locationId, setLocationId] = useState(locations[0]?.id ?? '');
   const [type, setType] = useState<SourceRecordType>('birthday');
@@ -309,6 +333,15 @@ export default function PreviewWorkbench({ locations, months }: Props) {
           <button type="submit" disabled={pending}>
             {pending ? 'Calculating…' : 'Preview next 20 occurrences'}
           </button>
+          {response?.status === 'ok' ? (
+            <p className="hint" style={{ marginBlockStart: 12 }}>
+              <a href={exportUrl(request)} download>
+                Download 50 years as .ics
+              </a>{' '}
+              — import this into Google or Apple Calendar to see the real events. No account
+              needed.
+            </p>
+          ) : null}
         </section>
       </form>
 

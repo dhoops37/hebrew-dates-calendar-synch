@@ -35,6 +35,25 @@ criteria; moving them out is recommendation §2 of the review.
 - [x] `#14` Next.js preview prototype
 - [x] `#15` PRD review, architecture, schema and rules documentation
 
+### Delivered early, because it needs no infrastructure and no credentials
+
+- [x] `#32` (from Phase 3) **50-year `.ics` export.** `packages/ical` renders
+  occurrences to RFC 5545, and `/api/export.ics` serves a downloadable file.
+  Pulled forward because it lets a real calendar client be tested before any
+  OAuth grant exists, and because the same renderer becomes the Phase 4
+  subscription feed. Validated against an independent iCalendar parser as well
+  as its own 29 tests.
+
+### Next decision-free step
+
+- [ ] **Reconciliation planner as a pure function.** `plan(desired, actual)` →
+  `create | update | delete | noop` per occurrence, with no network and no
+  database: the highest-risk logic in Phase 2, fully testable today. Writing it
+  before the Google client exists means the duplicate-prevention behaviour is
+  proven before any credential is issued.
+- [ ] **Google event payload mapper.** `Occurrence` → Google `events.insert`
+  request body, pure and snapshot-tested. Also needs no credentials.
+
 ---
 
 ## Phase 2 — Google Calendar MVP
