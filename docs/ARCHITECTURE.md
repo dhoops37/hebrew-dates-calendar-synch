@@ -15,14 +15,14 @@ identifier, because a Hebrew date is not a Gregorian recurrence rule.
 ## Decisions that need sign-off before Phase 2
 
 These are called out separately because they are expensive to reverse. Nothing
-in Phase 1 depends on them, and none has been committed to in code.
+in Phase 1 depends on them. D4 is now **decided**; the rest still await sign-off.
 
 | # | Decision | Recommendation | Why, and what it costs to change later |
 |---|---|---|---|
 | D1 | **Runtime and hosting** | Next.js 15 (App Router) on Vercel, PostgreSQL on a managed host (Supabase or Neon) | The PRD recommends Next.js and the workload is request/response plus a small amount of background work. Reversible: the engine and the sync layer are plain TypeScript. |
 | D2 | **Background jobs** | Start with **Postgres-backed jobs** (`sync_jobs` table + `SELECT … FOR UPDATE SKIP LOCKED`) driven by a scheduled invocation. Add a dedicated queue only if throughput demands it. | Avoids running Redis for a workload measured in thousands of writes a day. The `SyncJob` table is in the PRD already. Moving to a real queue later is a worker-side change; the table stays as the audit log. |
 | D3 | **ORM / migrations** | Plain SQL migrations, applied in order, with a thin typed query layer (`postgres.js` or Kysely). | The schema has strong constraints (partial unique indexes, generated columns, check constraints) that ORMs express poorly, and the migration plan is a deliverable in its own right. Prisma is the alternative if the team prefers it; it would change `db/` only. |
-| D4 | **Auth** | Google OAuth handled directly with `calendar.app.created` scope, plus email magic link for feed-only accounts. | Auth libraries make token *storage* opaque, and encrypted refresh tokens with rotation is precisely the part that must not be opaque. |
+| D4 | **Auth** | ✅ **Decided:** Google OAuth handled directly with the narrow `calendar.app.created` scope, plus email magic link for feed-only accounts. | Auth libraries make token *storage* opaque, and encrypted refresh tokens with rotation is precisely the part that must not be opaque. The narrow scope means the app can only touch calendars it created, which matches the dedicated-calendar default and is a far gentler consent screen. Consequence: "use an existing calendar" is not offered. |
 | D5 | **Geocoding** | `LocationProvider` interface (already in the engine); start with the built-in catalogue, add a provider when city coverage demands it. | Deferring the vendor choice costs nothing because the seam exists. |
 | D6 | **Test strategy for Google** | Contract tests against a recorded fixture set plus one live smoke account. No live API in CI. | Live-API CI is flaky and burns quota. |
 
@@ -32,16 +32,33 @@ in Phase 1 depends on them, and none has been committed to in code.
 
 ```
 packages/engine/     @hebrew-dates/engine   pure calculation, no I/O
+packages/ical/       @hebrew-dates/ical     RFC 5545 rendering, no I/O
 apps/web/            @hebrew-dates/web      Next.js UI + API routes
 db/migrations/       plain SQL, applied in order
+db/tests/            constraint verification for the migrations
 docs/                this file and its siblings
 ```
+
+### The two layers inside the engine
+
+```
+source record
+  │  resolveOccurrences()          location-free
+  ▼
+HebrewOccurrence[]                 Hebrew date, Gregorian day, rule, ambiguities
+  │  renderForDestination()        per member's calendar
+  ▼
+DestinationEvent[]                 sunset window, title, hash, external event ID
+```
+
+One family dataset, several members' calendars in different cities: the Hebrew
+dates are resolved once and shared; only the times differ. `generateOccurrences`
+composes the two for the common single-calendar case.
 
 Later phases add, without disturbing the above:
 
 ```
 packages/google-calendar/   Google Calendar adapter (Phase 2)
-packages/ical/              RFC 5545 feed + .ics export (Phase 4)
 apps/worker/                background jobs (Phase 3)
 ```
 
@@ -52,7 +69,7 @@ Three concrete reasons, not tidiness:
 1. **It has no dependencies to leak.** Its only runtime dependency is
    `@hebcal/core`. A package boundary makes it impossible for a React import or
    a database call to end up inside a calculation by accident.
-2. **It is the thing under test.** 203 tests run against it in ~1.7 s with no
+2. **It is the thing under test.** 244 tests run against it in ~2 s with no
    database, no network and no server. That speed is what makes a golden-date
    suite worth having.
 3. **It is reusable by the worker and the feed generator**, which are separate
@@ -85,9 +102,10 @@ paths under five host zones.
                     ┌───────────────▼──────────────────────────┐
                     │  @hebrew-dates/engine                     │
                     │    resolveAnniversary  (rules + warnings) │
-                    │    sunsetOn            (NOAA + IANA zone) │
-                    │    generateOccurrences (20 Hebrew years)  │
-                    │      → key, googleEventId, contentHash    │
+                    │    resolveOccurrences  (20 Hebrew years,  │
+                    │                         location-free)    │
+                    │    renderForDestination (sunset, content,  │
+                    │                          hash, event ID)   │
                     └───────────────┬──────────────────────────┘
                                     │  deterministic, pure
                     ┌───────────────▼──────────────────────────┐

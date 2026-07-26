@@ -41,9 +41,15 @@ export function occurrenceKey(input: OccurrenceKeyInput): string {
  * be retried safely: a duplicate insert fails with 409 rather than creating a
  * second event.
  */
-export function googleEventId(occurrenceKeyHex: string): string {
+export function googleEventId(
+  occurrenceKeyHex: string,
+  destinationCalendarId = '',
+): string {
+  // The destination is part of the derivation so that one occurrence reaching
+  // several calendars - a family whose members each have their own - cannot
+  // collide, and so the (calendar, event) uniqueness index can never be tripped.
   const digest = createHash('sha256')
-    .update(`hebrew-dates:google-event:v1:${occurrenceKeyHex}`)
+    .update(`hebrew-dates:google-event:v1:${occurrenceKeyHex}:${destinationCalendarId}`)
     .digest();
   return `hd${toBase32Hex(digest).slice(0, 30)}`;
 }

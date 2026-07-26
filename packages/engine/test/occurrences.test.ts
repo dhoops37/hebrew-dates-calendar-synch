@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { currentHebrewDateAt } from '../src/occurrences';
 import {
-  currentHebrewDateAt,
   generateOccurrences,
   type GenerateOccurrencesInput,
   type Occurrence,
-} from '../src/occurrences';
+} from '../src/generate';
 import { getSeedLocation } from '../src/locations';
 import { civilToAbsolute, formatCivilDate } from '../src/hebrewCalendar';
 import { HEBREW_MONTH_NUMBER, type CalculationLocation } from '../src/types';

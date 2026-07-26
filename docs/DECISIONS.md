@@ -20,11 +20,11 @@ recorded so the schema leaves room for it.
 | 12 | Event visibility is an option; personal calendars are the expected case. | Next: `visibility` on the calendar, default private |
 | 13 | Pausing a record **hides** future events by default. | Next: schema default |
 | 14 | No halachic reviewer yet; several rabbis to approach. | `CALCULATION-RULES.md` is the review packet |
-| 15 | (Scope question — explained below.) | Recommendation stands |
+| 15 | **Narrow OAuth scope agreed: `calendar.app.created`.** The app can only touch calendars it created itself. | Decided; Phase 2 implements it |
 | 16 | **One editor** for the famous-yahrzeit library. | Editorial workflow simplifies: no second-reviewer gate |
 | 17 | **Free, with donations.** Possible later tier: Torah from the tzaddik whose yahrzeit it is. | No paywall in the schema; `famous_people` gains a content relation later |
-| 18 | **One family dataset feeding several members' own calendars.** | **Structural** — see §2 |
-| 19 | A paid synagogue/organisation tier is plausible. | Records need a non-person owner from the start — see §2 |
+| 18 | **One family dataset feeding several members' own calendars.** | **Built** — see §2 |
+| 19 | A paid synagogue/organisation tier is plausible. | **Built**: `owners.kind` is individual / household / organisation from day one |
 
 ---
 
@@ -89,16 +89,15 @@ a visible, changeable result. It never silently decides.
 
 ---
 
-## 2. What #18 and #19 change structurally
+## 2. The family dataset (#18, #19) — built
 
-You want one family dataset populating several members' individual calendars,
-each of which may be in a different city. That breaks an assumption in the
-current schema, and it is much cheaper to fix now than after real events exist.
+One family dataset now populates several members' individual calendars, each of
+which may be in a different city.
 
-**The problem.** Today an occurrence stores its own sunset times and a location
-snapshot, because there is exactly one location per calendar. With two members in
-two cities, the same Hebrew date needs two different sunset windows — but it is
-still *one* anniversary, not two.
+**The problem it fixed.** An occurrence used to store its own sunset times and
+location snapshot, because there was exactly one location per calendar. Two
+members in two cities need two different sunset windows for what is still *one*
+anniversary.
 
 **The fix: split what is location-independent from what is not.**
 
@@ -109,29 +108,51 @@ still *one* anniversary, not two.
 | `destination_calendars` | one member's calendar: destination, location, display mode, reminders | — |
 | `destination_events` | start/end instants, title, description, content hash, external event ID | **yes** |
 
-So the sunset times move from the occurrence to the destination event. A family
-of four in four cities has one set of occurrences and four sets of events, and
-the Hebrew-date reasoning happens exactly once.
+Sunset times moved from the occurrence to the destination event. A family of four
+in four cities has one set of occurrences and four sets of events, and the
+Hebrew-date reasoning happens exactly once.
 
-This also answers #19: a synagogue is just a dataset whose destination calendars
-belong to an organisation rather than a household, so ownership needs to be a
-separate entity from day one rather than a `user_id` on every table.
+This also answers #19: `owners.kind` is `individual | household | organisation`
+from day one, and membership is a join table, so a synagogue is just a dataset
+whose owner is an organisation. No migration needed later.
 
-**Engine consequence**, specified and scheduled as the next change:
+**The engine API:**
 
 ```ts
-// today  — fuses the two concerns
-generateOccurrences({ origin, location, displayMode, count }) → Occurrence[]
+// location-free: Hebrew dates, Gregorian days, rules, ambiguities
+resolveOccurrences({ sourceRecordId, type, origin, count, from })
+  → HebrewOccurrence[]
 
-// next   — two steps, so one dataset can serve many destinations
-resolveOccurrences({ origin, count })              → HebrewOccurrence[]   // no location
-renderForDestination(occurrence, destinationCalendar) → DestinationEvent     // times, content, hash
+// per destination: sunset window, title, description, content hash, event ID
+renderForDestination(occurrence, record, destinationCalendar) → DestinationEvent
+renderForDestinations(occurrences, record, destinations)      → Map<id, DestinationEvent[]>
+
+// the single-calendar case, composed from the two above
+generateOccurrences({ ... })  → DestinationEvent[]
 ```
 
-Nothing about the rules changes; `resolveAnniversary` is already
-location-independent, and `sunsetOn` is already separate. It is a re-seam of
-`occurrences.ts`, not new logic — which is why it is worth doing before Phase 2
-persistence rather than after.
+No rules changed: `resolveAnniversary` was already location-independent and
+`sunsetOn` was already separate. `generateOccurrences` is now a thin composition
+of the two rather than a third implementation, and a test asserts the two paths
+produce byte-identical output.
+
+**What is now guaranteed by tests** (`test/destinations.test.ts`, 21 tests):
+
+- occurrences carry no times, no time zone and no location at all;
+- three siblings in Jerusalem, New York and Melbourne get the **same** Hebrew
+  dates and the **same** occurrence keys;
+- with **different** sunset windows, different external event IDs and different
+  content hashes, so each calendar reconciles independently;
+- each member keeps their own display mode, language and visibility;
+- a member above the Arctic Circle gets a no-sunset warning while the others get
+  exact times — same Hebrew date, same key;
+- an ambiguity (such as both Adars) reaches every member, because it is a
+  property of the date rather than of the place.
+
+**And by the database** (`db/tests/constraints.sql`, verified against
+PostgreSQL 16): one occurrence legitimately has two destination events in two
+zones, while a second event for the same occurrence in the *same* member's
+calendar is rejected, as is any two rows pointing at one external event.
 
 ---
 

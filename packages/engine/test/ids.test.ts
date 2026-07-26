@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { contentHash, googleEventId, occurrenceKey, stableStringify } from '../src/ids';
-import { generateOccurrences } from '../src/occurrences';
+import { generateOccurrences } from '../src/generate';
 import { getSeedLocation } from '../src/locations';
 
 const jerusalem = getSeedLocation('seed:jerusalem')!;

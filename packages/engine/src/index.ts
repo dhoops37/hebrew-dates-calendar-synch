@@ -20,4 +20,6 @@ export * from './format';
 export * from './ids';
 export * from './eventContent';
 export * from './occurrences';
+export * from './destinations';
+export * from './generate';
 export * from './locations';

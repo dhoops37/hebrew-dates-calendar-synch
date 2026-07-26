@@ -47,15 +47,30 @@ that decision #18 promoted from "future version" to required.
   subscription feed. Validated against an independent iCalendar parser as well
   as its own 29 tests.
 
+- [x] **Family-dataset refactor** (decision #18). `resolveOccurrences` produces
+  location-free Hebrew occurrences; `renderForDestination` renders each one for a
+  particular member's calendar. One dataset now feeds several members in several
+  cities: same Hebrew dates and keys, different sunset windows, event IDs and
+  hashes. `generateOccurrences` is a thin composition of the two, asserted to be
+  byte-identical to calling them directly. 21 new tests.
+- [x] **Schema restructured and verified against real PostgreSQL 16.**
+  `owners` / `owner_members` / `datasets` / `destination_calendars` replace the
+  single `calendar_profiles`; times and location snapshots moved from
+  `generated_occurrences` to `destination_events`. `db/tests/constraints.sql`
+  proves all 17 product rules the schema encodes, including that one occurrence
+  legitimately has two events in two zones while a duplicate in one member's
+  calendar is rejected.
+
 ### Next decision-free step
 
 - [ ] **Reconciliation planner as a pure function.** `plan(desired, actual)` →
-  `create | update | delete | noop` per occurrence, with no network and no
+  `create | update | delete | noop` per destination event, with no network and no
   database: the highest-risk logic in Phase 2, fully testable today. Writing it
   before the Google client exists means the duplicate-prevention behaviour is
   proven before any credential is issued.
-- [ ] **Google event payload mapper.** `Occurrence` → Google `events.insert`
-  request body, pure and snapshot-tested. Also needs no credentials.
+- [ ] **Google event payload mapper.** `DestinationEvent` → Google
+  `events.insert` request body, pure and snapshot-tested. Also needs no
+  credentials.
 
 ---
 
@@ -70,7 +85,7 @@ the inputs they are meant to reject — particularly the under-specified yahrzei
 **Done when:** migrations run in CI against a throwaway database and the
 constraint tests pass.
 
-### #17 — Google OAuth with `calendar.app.created`
+### #17 — Google OAuth with `calendar.app.created` (scope decided, #15)
 Authorisation code flow with PKCE, state validation, HTTP-only session cookie.
 Refresh tokens envelope-encrypted with a KMS-held key; `encryption_key_id`
 stored beside the ciphertext. Nothing token-shaped may reach a log.
@@ -81,12 +96,14 @@ for the token prefix finds nothing.
 **Risk:** OAuth verification for calendar scopes takes weeks. Start the review
 submission at the beginning of this phase, not the end.
 
-### #18 — Calendar profile and location
-Create/select a dedicated "Hebrew Dates" calendar; save a location with its IANA
-zone. Show the resolved location before saving (PRD 13.3).
+### #18 — Dataset, destination calendar and location
+Create a dataset and the owner's first destination calendar; create the dedicated
+"Hebrew Dates" calendar in Google; save a location with its IANA zone, seeded from
+the Google calendar's own `timeZone` (decision #11). Show the resolved location
+before saving (PRD 13.3).
 
-**Done when:** a profile has exactly one location and one destination, and
-changing the location offers recalculation.
+**Done when:** a destination calendar has exactly one location, and changing it
+offers recalculation of that member's events only.
 
 ### #19 — Source record CRUD
 Create, edit, pause, resume, delete, duplicate. Conditional validation for the

@@ -15,7 +15,8 @@
 import { describe, expect, it } from 'vitest';
 import { sunsetOn, formatInZone } from '../src/sunset';
 import { getSeedLocation } from '../src/locations';
-import { generateOccurrences, civilDateInZone } from '../src/occurrences';
+import { civilDateInZone } from '../src/occurrences';
+import { generateOccurrences } from '../src/generate';
 import type { CalculationLocation, CivilDate } from '../src/types';
 
 function requireLocation(id: string): CalculationLocation {

@@ -1,20 +1,20 @@
 /**
- * Occurrence generation: turning one source record into N dated, timed,
- * individually addressable calendar occurrences.
+ * Occurrence resolution: turning one source record into N dated, individually
+ * addressable Hebrew anniversaries.
+ *
+ * **This layer knows nothing about location.** A Hebrew anniversary falls on a
+ * particular Hebrew date and therefore a particular Gregorian day, and neither
+ * of those depends on where the observer is. Only the *times* do — sunset in
+ * Jerusalem is not sunset in Melbourne — and those live one layer out, in
+ * `destinations.ts`.
+ *
+ * That split is what lets one family dataset serve several members' calendars
+ * in different cities: one set of occurrences, several sets of events, and the
+ * Hebrew-date reasoning happening exactly once. See docs/DATA-MODEL.md §5.
  *
  * Explicitly *not* a recurrence rule. A Hebrew date does not recur on a
- * Gregorian cycle, so every occurrence is materialised with its own Hebrew
- * year, its own Gregorian dates, its own sunset instants and its own stable
- * identifier (PRD "Instructions to the Coding Agent").
- *
- * Exact Sunset Mode, per PRD 14.1:
- *   start = sunset on the Gregorian day *before* the Hebrew date's daytime
- *   end   = sunset on the Gregorian day *of* the Hebrew date's daytime
- *
- * Two-Day All-Day Mode, per PRD 14.2: one all-day event covering both of those
- * Gregorian days. `endDateExclusive` is the day after the second one, because
- * both RFC 5545 and the Google Calendar API treat an all-day end date as
- * exclusive - an off-by-one here shows up as a visibly wrong calendar.
+ * Gregorian cycle, so every occurrence is materialised with its own Hebrew year
+ * and its own stable identifier (PRD "Instructions to the Coding Agent").
  */
 import {
   resolveAnniversary,
@@ -25,13 +25,11 @@ import {
   absoluteToCivil,
   absoluteToHebrew,
   civilToAbsolute,
-  formatCivilDate,
   hebrewToAbsolute,
 } from './hebrewCalendar';
 import { hebrewDateLabels, type HebrewDateLabels } from './format';
-import { contentHash, googleEventId, occurrenceKey } from './ids';
+import { occurrenceKey } from './ids';
 import { sunsetOn } from './sunset';
-import { eventDescription, eventTitle } from './eventContent';
 import { CALCULATION_VERSION } from './version';
 import type {
   Ambiguity,
@@ -40,41 +38,19 @@ import type {
   CalculationLocation,
   CivilDate,
   DecisionRequired,
-  DisplayMode,
   HebrewDate,
   RuleId,
   SourceRecordType,
-  SunsetResult,
 } from './types';
 
-export interface GenerateOccurrencesInput {
-  /** Stable identifier of the source record. Feeds every derived identifier. */
-  sourceRecordId: string;
-  type: SourceRecordType;
-  displayName: string;
-  origin: AnniversaryOrigin;
-  location: CalculationLocation;
-  displayMode: DisplayMode;
-  /**
-   * How many future Hebrew *years* to materialise. The MVP horizon is 20.
-   * Not a count of occurrences: a record observed in both Adars produces two
-   * occurrences in a leap year while still covering one year of the horizon.
-   */
-  count: number;
-  /** Injected for testability; defaults to the current time. */
-  nowEpochMs?: number;
-  conventions?: CalculationConventions;
-  notes?: string;
-  customTitle?: string;
-  /** Per-year manual overrides, keyed by Hebrew year (PRD 17.1). */
-  overrides?: Record<number, HebrewDate>;
-}
-
-export interface Occurrence {
+/**
+ * One Hebrew anniversary in one Hebrew year. Location-independent: no times, no
+ * time zone, no location snapshot.
+ */
+export interface HebrewOccurrence {
   /** Deterministic key: sha256(sourceRecordId, hebrewYear, sequence). */
   key: string;
-  /** Deterministic Google Calendar event ID derived from `key`. */
-  googleEventId: string;
+  sourceRecordId: string;
   hebrewYear: number;
   /**
    * Which observance this is within its Hebrew year. 0 unless the record's
@@ -87,42 +63,42 @@ export interface Occurrence {
   gregorianDate: CivilDate;
   /** The Gregorian day whose sunset begins the Hebrew date. */
   precedingGregorianDate: CivilDate;
-  start: SunsetResult;
-  end: SunsetResult;
-  /** Present only when both sunsets resolved. */
-  timing: {
-    startIso: string;
-    endIso: string;
-    startEpochMs: number;
-    endEpochMs: number;
-    durationMinutes: number;
-  } | null;
-  allDay: {
-    /** Inclusive first day, "YYYY-MM-DD". */
-    startDate: string;
-    /** Exclusive end, "YYYY-MM-DD" - the day *after* the last covered day. */
-    endDateExclusive: string;
-  };
-  title: string;
-  description: string;
+  /** The day after the Hebrew date's daytime; the exclusive all-day end. */
+  followingGregorianDate: CivilDate;
   ruleApplied: RuleId;
   ambiguities: Ambiguity[];
   isManualOverride: boolean;
   calculationVersion: string;
-  contentHash: string;
-  /** Copy of the location as used, so a later location change is detectable. */
-  locationSnapshot: CalculationLocation;
-  /** Set when the sun does not set at this location on these days. */
-  warnings: OccurrenceWarning[];
 }
 
-export type OccurrenceWarning =
-  | { code: 'NO_SUNSET'; message: string }
-  | { code: 'AMBIGUOUS_HEBREW_DATE'; message: string };
+export interface ResolveOccurrencesInput {
+  /** Stable identifier of the source record. Feeds every derived identifier. */
+  sourceRecordId: string;
+  type: SourceRecordType;
+  origin: AnniversaryOrigin;
+  /**
+   * How many future Hebrew *years* to materialise. The MVP horizon is 20.
+   * Not a count of occurrences: a record observed in both Adars produces two
+   * occurrences in a leap year while still covering one year of the horizon.
+   */
+  count: number;
+  /**
+   * The earliest Hebrew date to include. Anything before it has already passed.
+   *
+   * Passed in rather than derived, because "has today's occurrence finished?" is
+   * a sunset question and therefore a per-location one. `currentHebrewDateAt`
+   * computes it for a given location; a shared dataset uses one anchor location
+   * and each destination still renders its own times.
+   */
+  from: HebrewDate;
+  conventions?: CalculationConventions;
+  /** Per-year manual overrides, keyed by Hebrew year (PRD 17.1). */
+  overrides?: Record<number, HebrewDate>;
+}
 
-export interface GenerateOccurrencesResult {
+export interface ResolveOccurrencesResult {
   status: 'ok';
-  occurrences: Occurrence[];
+  occurrences: HebrewOccurrence[];
   /**
    * How many future Hebrew years were materialised. This is the number the
    * dashboard reports and the rolling-horizon job checks, and it can be smaller
@@ -133,12 +109,12 @@ export interface GenerateOccurrencesResult {
   requiresReview: boolean;
 }
 
-export type GenerateOccurrencesOutcome =
-  | GenerateOccurrencesResult
+export type ResolveOccurrencesOutcome =
+  | ResolveOccurrencesResult
   | DecisionRequired<HebrewDate>;
 
 /**
- * The Hebrew year to start searching from, given "now" at a location.
+ * The Hebrew date currently in effect at a location.
  * Sunset-aware: after sunset the Hebrew date, and possibly the Hebrew year,
  * has already advanced.
  */
@@ -167,28 +143,31 @@ export function civilDateInZone(epochMs: number, timezoneId: string): CivilDate 
   return { year: get('year'), month: get('month'), day: get('day') };
 }
 
-export function generateOccurrences(
-  input: GenerateOccurrencesInput,
-): GenerateOccurrencesOutcome {
+/**
+ * Resolve the next `count` Hebrew years of a record into individual occurrences.
+ * Pure and location-free.
+ */
+export function resolveOccurrences(
+  input: ResolveOccurrencesInput,
+): ResolveOccurrencesOutcome {
   if (!Number.isInteger(input.count) || input.count < 1) {
     throw new RangeError(`count must be a positive integer, received ${input.count}`);
   }
-  const nowEpochMs = input.nowEpochMs ?? Date.now();
   const kind = input.type === 'birthday' ? 'birthday' : 'yahrzeit';
   const origin = normaliseOrigin(input.origin);
-  const today = currentHebrewDateAt(input.location, nowEpochMs);
-  const todayAbs = hebrewToAbsolute(today);
+  const fromAbs = hebrewToAbsolute(input.from);
 
-  const occurrences: Occurrence[] = [];
-  // `count` is a number of Hebrew *years*, not of occurrences: a record whose
-  // convention observes both Adars yields two occurrences in a leap year, and
-  // the horizon the user was promised is still twenty years either way.
+  const occurrences: HebrewOccurrence[] = [];
   let yearsWithOccurrences = 0;
   // Guard against pathological inputs looping forever.
   const maxYearsScanned = input.count + 5;
 
-  for (let scanned = 0; yearsWithOccurrences < input.count && scanned < maxYearsScanned; scanned++) {
-    const targetYear = today.year + scanned;
+  for (
+    let scanned = 0;
+    yearsWithOccurrences < input.count && scanned < maxYearsScanned;
+    scanned++
+  ) {
+    const targetYear = input.from.year + scanned;
     if (origin.year !== undefined) {
       if (kind === 'birthday' && targetYear < origin.year) continue;
       if (kind === 'yahrzeit' && targetYear <= origin.year) continue;
@@ -220,11 +199,11 @@ export function generateOccurrences(
 
     let addedThisYear = 0;
     for (const date of resolution.dates) {
-      // Skip an observance whose sunset-to-sunset window has already ended.
-      if (hebrewToAbsolute(date.hebrewDate) < todayAbs) continue;
+      // Skip an observance that has already passed at the anchor location.
+      if (hebrewToAbsolute(date.hebrewDate) < fromAbs) continue;
       occurrences.push(
-        buildOccurrence({
-          input,
+        buildHebrewOccurrence({
+          sourceRecordId: input.sourceRecordId,
           hebrewDate: date.hebrewDate,
           sequence: date.sequence,
           ruleApplied: date.ruleApplied,
@@ -250,110 +229,29 @@ export function generateOccurrences(
   };
 }
 
-function buildOccurrence(args: {
-  input: GenerateOccurrencesInput;
+function buildHebrewOccurrence(args: {
+  sourceRecordId: string;
   hebrewDate: HebrewDate;
   sequence: number;
   ruleApplied: RuleId;
   ambiguities: Ambiguity[];
   isManualOverride: boolean;
-}): Occurrence {
-  const { input, hebrewDate, sequence, ruleApplied, ambiguities, isManualOverride } = args;
+}): HebrewOccurrence {
+  const { sourceRecordId, hebrewDate, sequence, ruleApplied, ambiguities, isManualOverride } = args;
   const abs = hebrewToAbsolute(hebrewDate);
-  const gregorianDate = absoluteToCivil(abs);
-  const precedingGregorianDate = absoluteToCivil(abs - 1);
-  const followingGregorianDate = absoluteToCivil(abs + 1);
-
-  const start = sunsetOn(input.location, precedingGregorianDate);
-  const end = sunsetOn(input.location, gregorianDate);
-
-  const timing =
-    start.status === 'ok' && end.status === 'ok'
-      ? {
-          startIso: start.iso,
-          endIso: end.iso,
-          startEpochMs: start.epochMs,
-          endEpochMs: end.epochMs,
-          durationMinutes: Math.round((end.epochMs - start.epochMs) / 60000),
-        }
-      : null;
-
-  const allDay = {
-    startDate: formatCivilDate(precedingGregorianDate),
-    endDateExclusive: formatCivilDate(followingGregorianDate),
-  };
-
-  const contentInput = {
-    type: input.type,
-    displayName: input.displayName,
-    hebrewDate,
-    displayMode: input.displayMode,
-    locationDisplayName: input.location.displayName,
-    startIso: timing?.startIso ?? null,
-    endIso: timing?.endIso ?? null,
-    startDate: formatCivilDate(precedingGregorianDate),
-    endDate: formatCivilDate(gregorianDate),
-    ...(input.notes ? { notes: input.notes } : {}),
-    ...(input.customTitle ? { customTitle: input.customTitle } : {}),
-  };
-
-  const title = eventTitle(contentInput);
-  const description = eventDescription(contentInput);
-
-  const key = occurrenceKey({
-    sourceRecordId: input.sourceRecordId,
-    hebrewYear: hebrewDate.year,
-    sequence,
-  });
-
-  const warnings: OccurrenceWarning[] = [];
-  if (!timing) {
-    warnings.push({
-      code: 'NO_SUNSET',
-      message:
-        'The sun does not set at this location on these dates, so exact sunset times ' +
-        'cannot be calculated. Use the two-day all-day display, or choose a different ' +
-        'calculation location.',
-    });
-  }
-  for (const ambiguity of ambiguities) {
-    warnings.push({ code: 'AMBIGUOUS_HEBREW_DATE', message: ambiguity.explanation });
-  }
-
   return {
-    key,
-    googleEventId: googleEventId(key),
+    key: occurrenceKey({ sourceRecordId, hebrewYear: hebrewDate.year, sequence }),
+    sourceRecordId,
     hebrewYear: hebrewDate.year,
     sequence,
     hebrewDate,
     labels: hebrewDateLabels(hebrewDate),
-    gregorianDate,
-    precedingGregorianDate,
-    start,
-    end,
-    timing,
-    allDay,
-    title,
-    description,
+    gregorianDate: absoluteToCivil(abs),
+    precedingGregorianDate: absoluteToCivil(abs - 1),
+    followingGregorianDate: absoluteToCivil(abs + 1),
     ruleApplied,
     ambiguities,
     isManualOverride,
     calculationVersion: CALCULATION_VERSION,
-    // Hashed over exactly what reaches the destination event, plus the display
-    // mode and the times, so a location or mode change forces an update and
-    // nothing else does.
-    contentHash: contentHash({
-      title,
-      description,
-      displayMode: input.displayMode,
-      startIso: timing?.startIso ?? null,
-      endIso: timing?.endIso ?? null,
-      allDay,
-      timezoneId: input.location.timezoneId,
-      transparency: 'transparent',
-      calculationVersion: CALCULATION_VERSION,
-    }),
-    locationSnapshot: { ...input.location },
-    warnings,
   };
 }
