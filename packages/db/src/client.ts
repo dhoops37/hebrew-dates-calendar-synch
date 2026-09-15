@@ -51,6 +51,11 @@ export interface CreateDbOptions {
   /** Max connections for this instance. Keep small under serverless. */
   maxConnections?: number;
   /**
+   * Notified when an **idle** pooled connection dies — see the handler in
+   * `createDb` for why this exists at all. Defaults to a `console.warn`.
+   */
+  onIdleConnectionError?: (error: Error) => void;
+  /**
    * Set for the job runner and migrations: asserts the connection is not going
    * through a transaction pooler, because `FOR UPDATE SKIP LOCKED` and advisory
    * locks need a session-scoped connection.
@@ -75,6 +80,24 @@ export function createDb(options: CreateDbOptions): Kysely<Database> {
     connectionTimeoutMillis: 10_000,
     idleTimeoutMillis: 30_000,
     allowExitOnIdle: true,
+  });
+
+  // Not optional, and not merely tidy. `pg` emits 'error' on the pool when a
+  // connection dies while **idle** — Neon closing an idle connection, a
+  // failover, a maintenance restart, an administrator terminating a backend. If
+  // nothing is listening, `pg` rethrows, and because there is no request on the
+  // stack at that moment it surfaces as an uncaught exception and takes the
+  // whole process down. On Vercel that means killing whatever request happened
+  // to be in flight, for a connection nobody was using.
+  //
+  // There is nothing to do about it beyond noticing: the pool has already
+  // discarded the client, and the next caller gets a fresh one.
+  pool.on('error', (error: Error) => {
+    if (options.onIdleConnectionError) {
+      options.onIdleConnectionError(error);
+      return;
+    }
+    console.warn('[db] an idle pooled connection was closed by the server:', error.message);
   });
 
   return new Kysely<Database>({ dialect: new PostgresDialect({ pool }) });

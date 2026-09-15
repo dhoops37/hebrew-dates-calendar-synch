@@ -3,10 +3,13 @@
 Enter a Hebrew date once and keep seeing it on the correct Gregorian date every
 year — in the calendar you already use.
 
-**Status: Phase 2 — Google Calendar sync works end to end.** Sign in with
-Google, confirm your location, add a Hebrew date, and a dedicated "Hebrew Dates"
-calendar is created in your Google account with real sunset-to-sunset events in
-it. Free, and a gift to Klal Yisrael.
+**Status: the individual Google Calendar flow is complete.** Sign in with
+Google, search for and confirm your location, add a Hebrew date — or an English
+date, answering the sunset question if you are not sure which side of it the day
+fell on — and a dedicated "Hebrew Dates" calendar is created in your Google
+account with real sunset-to-sunset events in it. Edit a date and every future
+event moves in place; delete one and it tells you exactly what will go and what
+will stay before you commit. Free, and a gift to Klal Yisrael.
 
 The calculation engine came first and is unchanged: the instruction was to get
 the calculations right before writing to anyone's calendar, and that is still
@@ -22,7 +25,7 @@ four.
 
 ```bash
 pnpm install
-pnpm test        # 803 tests; database suites skip without TEST_DATABASE_URL
+pnpm test        # 943 tests; database suites skip without TEST_DATABASE_URL
 pnpm dev         # http://localhost:3000
 ```
 
@@ -72,6 +75,7 @@ one dependency each, and nothing else:
   packages/db/               Kysely over the SQL schema; the SQL is authoritative
   packages/crypto/           envelope encryption for stored tokens, Google Cloud KMS
   packages/google-client/    OAuth + Calendar over fetch, with failure classification
+  packages/geocoding/        place search: Nominatim, an offline city catalogue, IANA zones
 
 composition:
   packages/service/          the use cases — the only package that knows about all
@@ -157,13 +161,21 @@ wrapped by a Google Cloud KMS key, with the key version stored beside the
 ciphertext so rotation never requires reading a token back. Access tokens are
 never persisted at all.
 
+The audit log takes no free-form data. It is written through a closed union of
+event shapes, each with its own allow-list of fields, so what gets recorded is
+structural — *a date was created, in Nisan, with an original year* — and never
+the person's name, their Hebrew name, their relationship to you, your
+coordinates, or anything token-shaped. This is enforced at three levels,
+including a runtime guard against credential shapes, because a type alone
+cannot tell a refresh token from an identifier.
+
 ## Testing
 
 ```bash
 pnpm test                                     # skips the database suites
 
 export TEST_DATABASE_URL='postgres://user@localhost:5432/postgres'
-pnpm test                                     # all 803
+pnpm test                                     # all 943
 ```
 
 The integration suites run against a real PostgreSQL 16 — each file creates and

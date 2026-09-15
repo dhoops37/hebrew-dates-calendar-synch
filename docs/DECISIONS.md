@@ -351,3 +351,163 @@ redesign:
 - **Calculation version** — `generated_occurrences.calculation_version` records
   which engine produced each row, so a rule change can be applied selectively
   and the affected events updated rather than deleted and recreated.
+
+## 6. Getting to a real private deployment — built
+
+Five changes, all in service of one thing: being able to sign in to a real
+deployment, add a real date, see real Google Calendar events, edit them, and
+delete them.
+
+### "I'm not sure whether it was before or after sunset" is a question, not an error
+
+A Hebrew day runs sunset to sunset, so one Gregorian date is two different
+Hebrew dates. When the user does not know which, the engine refuses to choose.
+That refusal was correct and is unchanged. What was wrong was what happened
+next: it reached the web layer as a thrown error, so the honest answer produced
+something that looked like a crash.
+
+The blocker turned out not to be the UI. It was the schema:
+`gregorian_entry_needs_sunset_status` required a Gregorian entry to carry a
+sunset status, which made "I don't know" *unstorable* — and that is precisely
+why it had to surface as a throw.
+
+So the rule moved rather than being relaxed.
+`unresolved_sunset_entry_cannot_be_active` says such a record may exist but may
+not be **active**:
+
+```sql
+CHECK (original_gregorian_date IS NULL OR sunset_status IS NOT NULL OR active = false)
+```
+
+The refusal to guess is now enforced by Postgres. No code path — including one
+written later by someone who has not read this document — can generate
+occurrences from a guess, because generation only happens for active records and
+the database will not let an unanswered one become active. A test asserts that a
+direct `UPDATE ... SET active = true` is refused.
+
+What the user sees instead of an error: both candidate Hebrew dates, the
+calculated local sunset at their confirmed location on that date, one paragraph
+on why the answer matters, and where people usually find it out — a death
+certificate, a matzevah, a relative who was there. The submit button is disabled
+until one is chosen, and the server action refuses a request that carries no
+explicit choice. There is no default and no "probably daytime".
+
+One consequence worth recording: **a Gregorian entry's Hebrew date is derived,
+never accepted from the caller.** The web form has no Hebrew month to send in
+that mode, so it sends a placeholder; storing that placeholder would put a
+Hebrew date on the record that nothing computed, and for an entry whose sunset
+status was already known it would have been generated from. One function does
+the derivation for both the answered-at-entry and answered-later paths, so they
+cannot disagree about the same inputs.
+
+### Edit patches, it does not recreate
+
+An occurrence key is `sha256(source_record_id, hebrew_year, sequence)`. It
+deliberately **does not include the Hebrew date**. That is what makes correcting
+a date a patch: the same keyed occurrence now falls on a different Gregorian
+date, and the reconciler issues `PATCH` rather than delete-and-insert.
+
+It matters practically. Delete-and-recreate would lose any reminder the user
+added by hand, and would re-notify them about twenty years of anniversaries at
+once. A test asserts the Google event IDs are byte-identical before and after an
+edit in which every Gregorian date moved.
+
+The one case that does produce orphans is a convention change that *reduces* the
+count in a year — both Adars down to Adar II only leaves a stale sequence 1 — so
+regeneration reports which keys are current and anything else is removed.
+
+Editing a record still awaiting the sunset answer is refused: it would re-open
+the question, which is its own flow. Deleting one is not refused. Someone who
+typed the wrong date should not have to answer a question about it first.
+
+### Delete says what it will do, and keeps the past
+
+The past-event policy is `preserve`: an anniversary someone has already observed
+stays in their calendar. Deleting a record must not quietly break that, so the
+confirmation counts exactly what will happen — how many future events go, how
+many past ones stay — and the sentence shown to the user comes from the same
+numbers the deletion then acts on. The record is soft-deleted, so a mistake is
+recoverable.
+
+### Location search, not a list of 22 cities
+
+Nominatim for search, `tz-lookup` for the zone, and the old catalogue kept as an
+offline fallback. Three properties are non-negotiable and each is enforced
+somewhere other than the UI:
+
+- **The user confirms before it counts.** A search result is a `PlaceCandidate`,
+  not a location. `confirmPlaceById` is the only route from one to the other,
+  and the client sends a place *id* — the coordinates come from the server's own
+  cache of what it resolved, so a tampered form cannot plant a location the user
+  never saw.
+- **The zone is derived from the confirmed coordinates**, by an offline
+  shapefile lookup, never taken from the browser and never accepted from the
+  client. A transposed pair of coordinates is named as such rather than silently
+  resolving to the wrong hemisphere.
+- **A time zone is still never a calculation location.** That was decision 3 and
+  it is unchanged; the geocoder produces coordinates, and the zone rides along
+  with them rather than standing in for them.
+
+The catalogue is kept rather than deleted for two reasons: its entries carry
+**elevation** (754 m at Jerusalem, which moves sunset by minutes), and a
+geocoder outage must not block the location step. When the live provider fails,
+the search degrades to the catalogue and logs a warning — a quiet outage would
+otherwise mean every user silently gets 22 cities.
+
+### Rate limiting, in Postgres
+
+`/auth/google/start` writes a row and issues a redirect for anyone who asks, so
+a loop over it fills `oauth_states` and burns the OAuth client's quota. It is
+now limited to 20 per 15 minutes per client `/24`, with the callback and place
+search limited too.
+
+The counter is in Postgres rather than in memory because Vercel runs many
+instances: an in-process counter is per-instance and therefore not a limit.
+Counting is a single atomic upsert with a conditional window reset, verified
+with ten concurrent connections against a limit of three. Keyed by a
+three-octet prefix — enough to stop a loop, less than is needed to track
+anyone.
+
+### The audit log cannot be handed a free-form object
+
+The old `recordAudit(db, { action, details })` took `Record<string, unknown>`.
+Nothing stopped a future caller passing a display name, a relationship, a pair
+of coordinates, a refresh token or a calendar feed secret, and the log is the
+one table deliberately *not* covered by the usual deletion paths.
+
+It is now a closed discriminated union — fifteen event shapes, each naming its
+own fields — plus a runtime projection that copies only the keys allow-listed
+for that action. A field that is not on the list cannot reach the database even
+if a caller sets it.
+
+Three layers, because the type system alone is not enough for a log:
+
+1. **The union.** There is no `details` parameter to misuse. Adding a field
+   means adding it to the type *and* to `DETAIL_KEYS`, which is a deliberate,
+   visible act.
+2. **The projection.** Keys are copied by name from the allow-list, so extra
+   properties on an object that satisfies the type structurally are dropped.
+3. **A value guard**, which is the part a type cannot do: per-field length caps
+   plus a deny-list of credential shapes — `1//`, `ya29.`, a JWT, a PEM private
+   key, a URL carrying a `token=` parameter, a long base64 blob.
+
+That third layer exists because a character-class check is not sufficient, and a
+test proved it: `1//0gWj8xQZ_example_refresh_token` passes any reasonable
+"identifier-safe characters" pattern, because `/` and `_` are identifier-safe.
+Length and shape are what distinguish a credential from an identifier.
+
+What is logged is therefore structural: that a date was created, its Hebrew
+month and day, whether it had an original year, whether it was entered as a
+Gregorian date. Never the person's name, their Hebrew name, the relationship, or
+the year of death.
+
+### What was deliberately not done
+
+- **Workload Identity Federation.** The KMS service-account key in an
+  environment variable is acceptable for a private beta with one operator. WIF
+  removes the one secret that cannot be rotated by rotating something else, and
+  it is a gate before public launch, not before personal use.
+- **Family sharing, famous yahrzeits, the Apple feed, the Hebrew UI.** The
+  engine and the `ical` package already render several of these, and the schema
+  is designed for family datasets. None of it is exposed, on purpose: the
+  individual Google Calendar flow has to be real first.

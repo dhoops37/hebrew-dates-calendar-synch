@@ -67,13 +67,26 @@ export async function createTestDatabase(
 
   const connectionString = databaseUrlFor(name);
   const extras: Kysely<Database>[] = [];
+  // A connection terminated by `DROP DATABASE ... WITH (FORCE)` is expected
+  // here, so it is not worth a warning per test file. Anything else still is.
+  let tearingDown = false;
+  const onIdleConnectionError = (error: Error) => {
+    if (!tearingDown) {
+      console.warn(`[test-db ${name}] idle connection closed by the server:`, error.message);
+    }
+  };
   const connect = (): Kysely<Database> => {
-    const extra = createDb({ connectionString, allowInsecure: true, maxConnections: 2 });
+    const extra = createDb({
+      connectionString,
+      allowInsecure: true,
+      maxConnections: 2,
+      onIdleConnectionError,
+    });
     extras.push(extra);
     return extra;
   };
 
-  const db = createDb({ connectionString, allowInsecure: true });
+  const db = createDb({ connectionString, allowInsecure: true, onIdleConnectionError });
   // The migration-runner tests need an empty server to migrate themselves.
   if (options.migrate !== false) await migrate(db, MIGRATIONS_DIR);
 
@@ -83,16 +96,49 @@ export async function createTestDatabase(
     connectionString,
     connect,
     async destroy() {
+      tearingDown = true;
       await Promise.all(extras.map((extra) => extra.destroy()));
       await db.destroy();
       const cleanup = createDb({ connectionString: TEST_DATABASE_URL, allowInsecure: true });
       try {
+        // `pool.end()` resolves once it has asked its clients to close, which is
+        // not the same as the server having reaped the backends. Dropping while
+        // one is still attached makes `WITH (FORCE)` terminate it, and the FATAL
+        // lands on a socket that is still being read — reported as an unhandled
+        // error and attributed to whichever file happened to be running. So
+        // wait for the backends to actually go, and keep FORCE as the backstop.
+        await waitForNoBackends(cleanup, name);
         await sql.raw(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`).execute(cleanup);
       } finally {
         await cleanup.destroy();
       }
     },
   };
+}
+
+/**
+ * Wait until nothing is connected to `database`.
+ *
+ * Best effort: after two seconds it gives up and lets `WITH (FORCE)` deal with
+ * whatever is left, because a hung teardown is worse than a stray warning.
+ */
+async function waitForNoBackends(
+  admin: Kysely<Database>,
+  database: string,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const result = await sql<{ count: number }>`
+      SELECT count(*)::int AS count
+        FROM pg_stat_activity
+       WHERE datname = ${database}
+         AND pid <> pg_backend_pid()
+    `.execute(admin);
+    if ((result.rows[0]?.count ?? 0) === 0) return;
+    if (Date.now() >= deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }
 
 /**

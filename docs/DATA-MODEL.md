@@ -91,6 +91,8 @@ calendar_locations
   use_elevation       boolean not null default true   -- ADDED, see §3.3
   timezone_id         text not null                   -- IANA zone OF THIS PLACE
   geocoder_place_id   text
+  geocoder            text                            -- ADDED: which service resolved it
+  geocoder_display_name text                          -- ADDED: under what name
   source              text not null default 'user_selected'
                         -- 'user_selected'|'geocoded'|'timezone_suggestion'|'calendar_timezone_hint'
   confirmed_at        timestamptz                     -- NULL = suggested, not confirmed
@@ -260,11 +262,24 @@ famous_subscriptions      (dataset_id, famous_person_id, active, reminder_overri
 sync_jobs                 (dataset_id, destination_calendar_id?, job_type, status,
                            attempt_count, scheduled_at, started_at, completed_at,
                            error_summary)
-audit_log                 (ADDED: actor, action, subject_type, subject_id, at)
+audit_log                 (ADDED: actor, action, subject_type, subject_id, at, details)
+rate_limits               (ADDED: bucket pk, window_start, attempts, updated_at)
 ```
 
 `audit_log` exists because PRD 30 requires logging administrative access to
 famous-yahrzeit records and PRD 33 requires change history.
+
+Its `details` column is `jsonb`, but **nothing may write to it directly.** The
+only writer is `recordAuditEvent` in `packages/db/src/audit.ts`, which takes a
+closed discriminated union of event shapes and projects each through a
+per-action key allow-list. This is deliberate and it is the one table where it
+matters most: the audit log is not covered by the usual deletion paths, so a
+name or a token written here outlives the record it came from. See decision 6.
+
+`rate_limits` is a fixed-window counter keyed by `"<policy>:<subject>"`. It is in
+Postgres rather than in process memory because Vercel runs many instances, and a
+per-instance counter is not a limit. Rows whose window closed more than 24 hours
+ago are deleted by `purgeExpired` on the cron tick.
 
 ## 3. Divergences from PRD 24, with reasons
 
@@ -292,9 +307,26 @@ file only where reversal is safe.
 | Migration | Contents | Phase |
 |---|---|---|
 | `0001_init.sql` | `users`, `owners`, `owner_members`, `datasets`, `destination_calendars`, `calendar_locations`, `source_records`, `generated_occurrences`, `destination_events`, `reminder_rules`, `sync_jobs`, all constraints and indexes. **Applies cleanly against PostgreSQL 16; `db/tests/constraints.sql` verifies all 17 product rules it encodes.** | 2 |
-| `0002_google_connections.sql` | `google_calendar_connections`, `audit_log` | 2 |
-| `0003_feeds.sql` | `calendar_feeds` | 4 |
-| `0004_famous.sql` | `famous_people`, `famous_person_sources`, `famous_subscriptions` | 5 |
+| `0002_auth_and_google.sql` | `google_accounts`, `sessions`, `oauth_states`, `google_calendar_connections`, `audit_log` | 2 |
+| `0003_rate_limits_and_geocoding.sql` | `rate_limits`; `calendar_locations.geocoder` and `.geocoder_display_name`; **replaces** `gregorian_entry_needs_sunset_status` with `unresolved_sunset_entry_cannot_be_active` | 3 |
+| `0004_feeds.sql` | `calendar_feeds` | 4 |
+| `0005_famous.sql` | `famous_people`, `famous_person_sources`, `famous_subscriptions` | 5 |
+
+`0003` is the only migration so far that changes a rule rather than adding
+storage, and it is worth reading in full. The old constraint required a
+Gregorian entry to carry a sunset status, which made "I don't know whether it
+was before or after sunset" **unstorable** — and that is why the honest answer
+surfaced to the user as an application error. The new constraint says such a
+record may exist but may not be *active*:
+
+```sql
+CHECK (original_gregorian_date IS NULL OR sunset_status IS NOT NULL OR active = false)
+```
+
+Nothing is generated for an inactive record, so the engine's refusal to guess is
+now enforced by the database rather than by a throw. A partial index on
+`(dataset_id) WHERE original_gregorian_date IS NOT NULL AND sunset_status IS
+NULL AND deleted_at IS NULL` finds the outstanding questions for the dashboard.
 
 Rules the project holds itself to:
 

@@ -29,8 +29,26 @@ Do them in this order — each one produces a value the next needs.
    ```bash
    export DATABASE_URL_DIRECT='postgres://...'   # the DIRECT one
    pnpm db:migrate
-   pnpm db:status                                 # should show both applied
+   pnpm db:status                                 # all three should be APPLIED
    ```
+
+   There are three migrations. `0003_rate_limits_and_geocoding.sql` is the one
+   worth knowing about, because it changes a rule rather than only adding
+   columns:
+
+   - adds `rate_limits`, which is where the sign-in rate limiter keeps its
+     counters. It is in Postgres rather than in memory because Vercel runs many
+     instances and an in-memory limit would be per-instance, which is no limit
+     at all. Rows older than 24 hours are deleted by the cron tick.
+   - adds `calendar_locations.geocoder` and `.geocoder_display_name`, so a
+     confirmed place records which service resolved it and under what name.
+   - replaces `gregorian_entry_needs_sunset_status` with
+     `unresolved_sunset_entry_cannot_be_active`. The old rule made "I don't know
+     whether it was before or after sunset" unstorable, which is why the honest
+     answer surfaced as an error. The new rule says such a record may exist but
+     may not be **active** — so the refusal to guess is enforced by the database,
+     and no code path, including one written later, can generate occurrences
+     from a guess.
 
    `db:migrate` is safe to re-run: applied migrations are immutable by checksum
    and re-running is a no-op.
@@ -132,6 +150,21 @@ One project holds both the OAuth client and the KMS key.
    | `GOOGLE_APPLICATION_CREDENTIALS_JSON` | the whole service-account JSON, pasted as one line |
    | `APP_URL` | `https://YOUR-DOMAIN` |
    | `CRON_SECRET` | `openssl rand -hex 32` |
+   | `GEOCODER_USER_AGENT` | `HebrewDates/1.0 (https://YOUR-DOMAIN; you@example.com)` |
+
+   `GEOCODER_USER_AGENT` is the only optional one, and it is the one that
+   decides whether city search works. It enables the OpenStreetMap Nominatim
+   backend, which needs no API key but whose usage policy requires a User-Agent
+   identifying the deployment and a way to contact whoever runs it. Unset, the
+   application falls back to a built-in list of 22 cities — it still works, but
+   it will not find most people's town, and the dashboard's Connection panel
+   says which backend is in use.
+
+   Put a real contact address in it. An application that cannot be contacted
+   about a problem gets blocked rather than emailed. The client sends at most
+   one request per second and caches results for ten minutes; if Nominatim is
+   unreachable the request falls back to the built-in list rather than failing,
+   and logs a warning so a quiet outage is visible.
 
    Do **not** set `LOCAL_ENVELOPE_MASTER_KEY` in production. The application
    refuses to start with it and no KMS key, checking `VERCEL_ENV` as well as
@@ -154,19 +187,66 @@ One project holds both the OAuth client and the KMS key.
 
 ## 4. Verify it end to end
 
-1. Visit the site and press **Add my dates to Google Calendar**.
-2. The consent screen should show exactly three permissions, one of which reads
+This is the whole individual flow. Do it against the real deployment with your
+own Google account, and check Google Calendar itself at each step rather than
+trusting the dashboard.
+
+1. **Sign in.** Visit the site and press **Add my dates to Google Calendar**.
+   The consent screen should show exactly three permissions, one of which reads
    like *"See, create, and edit only the calendars created by this app"*. If it
    asks for anything broader, stop — the scope configuration is wrong.
-3. Confirm your location.
-4. Press **Create my Hebrew Dates calendar**, then check Google Calendar: a new
-   calendar named "Hebrew Dates" should appear in your list.
-5. Add a date. Events should appear immediately, running sunset to sunset, shown
-   as *free* rather than busy.
-6. Press **Sync now** again. It should report "Everything is already up to
-   date" and issue no writes.
-7. Wait for a cron tick (or call the endpoint yourself with the secret) and
-   confirm the horizon extends to twenty years.
+
+2. **Confirm your location.** Search for your town. You should see the resolved
+   name, its time zone and its coordinates *before* anything is saved, and you
+   have to press **Use this location** for it to become a calculation location.
+   A time zone alone is never enough: a zone spans hundreds of miles and sunset
+   differs across it by the better part of an hour.
+
+   If search returns nothing but the 22-city list, `GEOCODER_USER_AGENT` is not
+   set — check the Connection panel at the bottom of the dashboard, which names
+   the backend in use.
+
+3. **Create the calendar.** Press **Create my Hebrew Dates calendar**, then
+   check Google Calendar: a new calendar named "Hebrew Dates" appears in your
+   list. Nothing is written to any other calendar, and the app cannot see them.
+
+4. **Add a Hebrew date.** Events appear immediately, running sunset to sunset,
+   shown as *free* rather than busy. Each year is its own event on its own
+   Gregorian date — there is deliberately no yearly recurrence, because a
+   Gregorian yearly rule is wrong for a Hebrew date.
+
+5. **Add a date by English date, and answer the sunset question.** Choose *I
+   know the English (Gregorian) date*, enter one, and leave **I am not sure**
+   selected. The dashboard should then show, above everything else:
+
+   - both candidate Hebrew dates, a day apart;
+   - the calculated local sunset at your confirmed location on that date;
+   - why the answer matters;
+   - and where people usually find it out.
+
+   Nothing is written to the calendar until you choose. Confirm that: the date
+   is in your list marked *awaiting your answer*, and Google Calendar has no
+   events for it. Then choose one, and the events appear.
+
+6. **Sync again.** Press **Sync now**. It should report "Everything is already
+   up to date" and issue no writes.
+
+7. **Edit.** Change the Hebrew date on one of your entries. Watch the
+   reconciliation: every future event moves to its new Gregorian date, and the
+   **Google event IDs stay the same** — the app issues PATCHes rather than
+   deleting and recreating, so a reminder you added by hand survives and you are
+   not re-notified about twenty years at once. Check one event in Google
+   Calendar before and after to confirm it moved rather than being replaced.
+
+8. **Delete.** Press **Delete** on an entry. Before committing, it tells you
+   exactly how many future events will be removed and how many past ones will
+   be kept, from the same counts the deletion then acts on. Confirm, then check
+   Google Calendar: future events gone, past anniversaries still there. That
+   last part is the policy, not an oversight — an anniversary someone has
+   already observed stays in their calendar.
+
+9. **Let the cron tick.** Wait for a tick (or call the endpoint yourself with
+   the secret) and confirm the horizon extends to twenty years.
 
 ---
 
@@ -177,6 +257,8 @@ cp apps/web/.env.example apps/web/.env.local
 # fill in DATABASE_URL, the OAuth client, and:
 #   LOCAL_ENVELOPE_MASTER_KEY=$(openssl rand -base64 32)
 #   CRON_SECRET=$(openssl rand -hex 32)
+# optionally, to make city search work locally:
+#   GEOCODER_USER_AGENT=HebrewDates/0.1 (local dev; you@example.com)
 
 pnpm install
 pnpm db:migrate
@@ -199,6 +281,54 @@ pnpm test
 `TEST_DATABASE_URL` must point at a database where the user may `CREATE
 DATABASE`: each integration file creates and drops its own throwaway database,
 so a failing test cannot poison its neighbours.
+
+---
+
+## Rate limits
+
+Three endpoints are limited, by a fixed window kept in the `rate_limits` table:
+
+| What | Limit | Window | Keyed by |
+|---|---|---|---|
+| `/auth/google/start` | 20 | 15 minutes | client `/24` (or IPv6 `/48`) |
+| `/auth/google/callback` | 40 | 15 minutes | client `/24` |
+| place search | 60 | 5 minutes | signed-in user |
+
+The sign-in limits exist because `/auth/google/start` writes a row and issues a
+redirect for anyone who asks; without a limit, a loop over it fills
+`oauth_states` and burns the OAuth client's quota. The counters are keyed by a
+three-octet prefix rather than a full address — enough to stop a loop, less than
+is needed to track anyone.
+
+The counting is one atomic upsert, so concurrent instances cannot each let a
+request through; this is verified in the test suite with ten concurrent
+connections against a limit of three. Exceeding a limit returns a readable 429
+page with `retry-after`, and the first rejection in a window records an
+`auth.rate_limited` audit event carrying the prefix and the attempt count.
+
+To raise a limit, change `RATE_LIMITS` in `packages/db/src/rate-limit.ts`. To see
+what is currently limited:
+
+```sql
+SELECT bucket, attempts, window_start FROM rate_limits ORDER BY updated_at DESC;
+```
+
+The cron tick deletes rows whose window closed more than 24 hours ago, so the
+table does not grow.
+
+---
+
+## A note on service-account keys
+
+The KMS credential in `GOOGLE_APPLICATION_CREDENTIALS_JSON` is a long-lived
+private key in an environment variable. That is acceptable for a private beta
+with one operator, and it is what the steps above set up.
+
+It is not where this should end up. Workload Identity Federation lets Vercel
+exchange a short-lived OIDC token for Google credentials with no stored private
+key at all, which removes the one secret here that cannot be rotated by
+rotating something else. It is listed in `docs/ROADMAP.md` as a gate before
+public launch, not before personal use.
 
 ---
 

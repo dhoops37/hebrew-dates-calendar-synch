@@ -24,7 +24,7 @@ working.
 | D2 | **Background jobs** | ✅ Postgres-backed `sync_jobs` with `FOR UPDATE SKIP LOCKED`, driven by **Vercel Cron** every 15 minutes | No Redis for a workload measured in thousands of writes a day, and `sync_jobs` was already the audit trail. Moving to a real queue later is a worker-side change; the table stays. The claim query needs a session-scoped connection, so the worker must use Neon's **direct** endpoint — `createDb({ requireDirectConnection: true })` asserts it. |
 | D3 | **ORM / migrations** | ✅ Plain SQL migrations with **Kysely** as the typed query layer. No Prisma. | The schema's constraints encode product rules an ORM would reinterpret. `packages/db/src/schema.ts` is a hand-maintained mirror of the SQL, and `schema-parity.test.ts` parses those types with the TypeScript compiler and diffs them against `information_schema` in both directions, so drift fails a test. |
 | D4 | **Auth** | ✅ Google OAuth handled directly, `calendar.app.created` only, plus `openid` and `userinfo.email` for identity | Auth libraries make token *storage* opaque, and encrypted refresh tokens with rotation is precisely the part that must not be opaque. Consequence: "use an existing calendar" is not offered, and cannot be — the scope forbids it. |
-| D5 | **Geocoding** | ✅ Built-in catalogue of 22 seed locations for now; `LocationProvider` seam stays | Deferring the vendor choice costs nothing because the seam exists. The dashboard's location picker offers the catalogue plus a time-zone suggestion the user must confirm. |
+| D5 | **Geocoding** | ✅ **OpenStreetMap Nominatim** for search, with the 22-location catalogue as an offline fallback, and `tz-lookup` for the IANA zone | No API key and no billing account, which is what made it the one that could ship. Costs of changing: `GeocodingProvider` is a two-method interface and `CompositeGeocoder` already merges two implementations, so a paid provider is an added file, not a rewrite. The catalogue is kept rather than deleted because it carries **elevation** — 754 m at Jerusalem moves sunset by minutes — and because a geocoder outage must not block the location step. The zone is derived from the confirmed coordinates by an offline shapefile lookup, never from the browser and never accepted from the client. |
 | D6 | **Test strategy for Google** | ✅ A high-fidelity `fetch`-level double, plus one live smoke account when credentials exist. No live API in CI. | The double is faithful about the four behaviours the code depends on: no refresh token without `prompt=consent`, event IDs reserved forever after deletion, foreign calendars reported 404 not 403, and 403 covering both quota and permission. Live-API CI is flaky and burns quota. |
 
 ---
@@ -307,6 +307,9 @@ implemented as a status column plus `attempt_count` and `next_attempt_at`.
 | OAuth and Calendar HTTP | `google-client` | `fetch`-level, with failure classification |
 | Composition of all of it | `service` | The only package that knows about every other |
 | Rate limiting and retries | `google-client` + `service/sync.ts` | Classification decides *whether*; backoff decides *when* |
+| Rate limiting of *our own* endpoints | `db/rate-limit.ts` | One atomic upsert against `rate_limits`. In Postgres, not memory: Vercel runs many instances, so an in-process counter is per-instance and therefore not a limit |
+| What may be written to the audit log | `db/audit.ts` | A closed discriminated union plus a per-action key allow-list. The log cannot be reached with a free-form object, so a future caller cannot pass a name or a token through it |
+| Refusing to guess a Hebrew date | `engine` **and** the `source_records` CHECK constraint | The engine refuses, and `unresolved_sunset_entry_cannot_be_active` means an unanswered record cannot be active — so the refusal survives a code path written later that forgot about it |
 
 ---
 
@@ -314,7 +317,7 @@ implemented as a status column plus `attempt_count` and `next_attempt_at`.
 
 | Simplification | Exit criterion |
 |---|---|
-| Location catalogue is a hard-coded list of 22 cities | Replaced by a `LocationProvider` backed by a geocoder when city coverage is inadequate. The seam exists; only the implementation is missing. |
+| ~~Location catalogue is a hard-coded list of 22 cities~~ | ✅ Done: Nominatim search with the catalogue as an offline fallback. What remains is that Nominatim has no SLA — the exit criterion for that is a paid provider behind the same `GeocodingProvider` interface, when usage justifies the bill. |
 | ~~No database~~ | ✅ Done: Neon + Kysely, with the SQL authoritative. |
 | ~~No auth~~ | ✅ Done: Google OAuth with PKCE, sessions in Postgres. |
 | Engine imports are extensionless and resolved by the bundler | If the worker needs to run the engine under plain Node ESM, add a build step. The migration CLI already names its own imports with `.ts` for Node's type stripping. |

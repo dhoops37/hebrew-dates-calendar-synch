@@ -183,13 +183,14 @@ the full ordered list.
 Defaults per PRD 18.1–18.3, seeded per destination calendar as data. A
 per-record override replaces the calendar default entirely.
 
-### #24 — Dashboard ✅ *(minimum viable)*
-Connect Google, confirm a location, create the calendar, add a date, see upcoming
-occurrences with a legible sync status, see recent background work, disconnect.
+### #24 — Dashboard ✅
+Connect Google, search for and confirm a location, create the calendar, add a
+date by Hebrew or English date, answer the sunset question when there is one,
+see upcoming occurrences with a legible sync status, edit, pause, delete, see
+recent background work, disconnect.
 
 **Remaining:** flagged occurrences are counted but their explanations are not
-rendered beside them; there is no edit or delete control; no horizon progress
-bar.
+rendered beside them; no horizon progress bar.
 
 ### #25 — Authorisation boundary test suite ✅
 `packages/db/test/integration/tenancy.test.ts` attempts every dataset-scoped
@@ -202,6 +203,51 @@ service layer. Every attempt fails, and fails as "Not found" rather than
 Per the Phase 2 brief: famous yahrzeits, Apple/iCalendar subscription
 management, the Hebrew UI, and polished family management. The schema and the
 engine support all four; none is exposed.
+
+---
+
+## Phase 2.5 — Ready for a real private deployment ✅ delivered
+
+Not in the original plan. Five things stood between the built application and
+actually using it, and none of them was a feature. See `docs/DECISIONS.md` §6
+for the reasoning; briefly:
+
+### #24a — The sunset question ✅
+"I'm not sure whether it was before or after sunset" no longer surfaces as an
+error. The user gets both candidate Hebrew dates, the calculated local sunset at
+their confirmed location, why it matters, and where to find out — and must
+choose before anything is generated. The refusal to guess moved from a thrown
+error into a CHECK constraint, so it now survives code written later.
+
+### #24b — Edit and delete ✅
+Editing regenerates and reconciles, patching existing Google events rather than
+recreating them, so hand-added reminders survive and nobody is re-notified about
+twenty years at once. Deleting states how many future events go and how many
+past ones stay, from the same counts it then acts on, and preserves the past per
+the existing policy.
+
+### #24c — Real location search ✅
+Nominatim, with the 22-city catalogue kept as an offline fallback and for its
+elevation data. The user confirms a resolved place before it becomes a
+calculation location, the IANA zone is derived server-side from the confirmed
+coordinates, and a time zone alone is still never a calculation location.
+
+### #24d — Rate limiting on `/auth/google/start` ✅
+Fixed window in Postgres, not in memory, because Vercel runs many instances.
+Sign-in, callback and place search are all limited.
+
+### #24e — A typed audit API ✅
+`recordAudit(db, { details: Record<string, unknown> })` is gone. A closed union
+of fifteen event shapes, a per-action key allow-list, and a value guard against
+credential shapes. A future caller cannot accidentally log a name, a
+relationship, a pair of coordinates, an OAuth token or a feed secret — the log
+takes no free-form object at all.
+
+### Still deferred, on purpose
+**Workload Identity Federation.** The KMS service-account key in a Vercel
+environment variable is acceptable for a private beta with one operator. WIF
+removes the one secret here that cannot be rotated by rotating something else,
+and it is a gate before *public* launch, not before personal use.
 
 ---
 
@@ -297,3 +343,10 @@ changes.
   yahrzeits, missing-30th behaviour, and the wording of every warning. Give the
   reviewer `docs/CALCULATION-RULES.md` and the flagged-year output.
 - **No PII in analytics or error payloads**, enforced by an allowlist and tested.
+  ✅ Done for the audit log, which was the hardest case because it is the one
+  table deliberately outside the usual deletion paths: `packages/db/src/audit.ts`
+  is a closed union plus an allow-list plus a credential-shape guard, with 28
+  tests. The same discipline still needs applying to error reporting when #33
+  lands.
+- **Workload Identity Federation before public launch.** Not before personal or
+  private-beta use; see Phase 2.5.
