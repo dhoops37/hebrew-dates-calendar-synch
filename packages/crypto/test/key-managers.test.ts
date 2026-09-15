@@ -7,7 +7,7 @@
  * easy to write code that works with one key version and silently stops working
  * after a rotation, and the only visible difference is which name was passed.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import {
   KeyManagerError,
@@ -448,5 +448,51 @@ describe('resolveKeyManager', () => {
     } as NodeJS.ProcessEnv);
     // The description is logged at startup and shown in diagnostics.
     expect(resolved.description).not.toContain(masterKey);
+  });
+});
+
+describe('service-account credentials', () => {
+  // The variable Google's own ADC looks for is a *file path*, and a serverless
+  // platform has no file to point it at — so the JSON is accepted inline. These
+  // assertions exist because a wrong value here fails at the first KMS call
+  // with an opaque error, long after deploy.
+  const original = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    else process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = original;
+  });
+
+  it('refuses a value that is not JSON, naming the variable', () => {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = 'not json at all';
+    expect(() => new KmsKeyManager({ keyName: KEY_NAME })).toThrow(
+      /GOOGLE_APPLICATION_CREDENTIALS_JSON is not valid JSON/,
+    );
+  });
+
+  it('refuses JSON that is not a service-account key', () => {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = JSON.stringify({ hello: 'world' });
+    expect(() => new KmsKeyManager({ keyName: KEY_NAME })).toThrow(
+      /missing client_email or private_key/,
+    );
+  });
+
+  it('accepts a well-formed service-account key', () => {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = JSON.stringify({
+      type: 'service_account',
+      project_id: 'hebrew-dates',
+      client_email: 'app@hebrew-dates.iam.gserviceaccount.com',
+      // Deliberately escaped: several dashboards store it this way, and the
+      // resulting failure is very hard to diagnose from the error alone.
+      private_key: '-----BEGIN PRIVATE KEY-----\\nZm9v\\n-----END PRIVATE KEY-----\\n',
+    });
+    expect(() => new KmsKeyManager({ keyName: KEY_NAME })).not.toThrow();
+  });
+
+  it('leaves Application Default Credentials alone when the variable is unset', () => {
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    // Constructing the real client must still work: on Cloud Run or a developer
+    // machine with `gcloud auth application-default login`, ADC is correct.
+    expect(() => new KmsKeyManager({ keyName: KEY_NAME })).not.toThrow();
   });
 });

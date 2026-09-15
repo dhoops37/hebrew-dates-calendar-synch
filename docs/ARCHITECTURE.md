@@ -12,41 +12,132 @@ identifier, because a Hebrew date is not a Gregorian recurrence rule.
 
 ---
 
-## Decisions that need sign-off before Phase 2
+## Decisions, now all made
 
-These are called out separately because they are expensive to reverse. Nothing
-in Phase 1 depends on them. D4 is now **decided**; the rest still await sign-off.
+All six are decided. Each row records what was chosen and what reversing it
+would cost, because that is the part that is easy to forget once something is
+working.
 
-| # | Decision | Recommendation | Why, and what it costs to change later |
+| # | Decision | Chosen | Why, and what it costs to change later |
 |---|---|---|---|
-| D1 | **Runtime and hosting** | Next.js 15 (App Router) on Vercel, PostgreSQL on a managed host (Supabase or Neon) | The PRD recommends Next.js and the workload is request/response plus a small amount of background work. Reversible: the engine and the sync layer are plain TypeScript. |
-| D2 | **Background jobs** | Start with **Postgres-backed jobs** (`sync_jobs` table + `SELECT … FOR UPDATE SKIP LOCKED`) driven by a scheduled invocation. Add a dedicated queue only if throughput demands it. | Avoids running Redis for a workload measured in thousands of writes a day. The `SyncJob` table is in the PRD already. Moving to a real queue later is a worker-side change; the table stays as the audit log. |
-| D3 | **ORM / migrations** | Plain SQL migrations, applied in order, with a thin typed query layer (`postgres.js` or Kysely). | The schema has strong constraints (partial unique indexes, generated columns, check constraints) that ORMs express poorly, and the migration plan is a deliverable in its own right. Prisma is the alternative if the team prefers it; it would change `db/` only. |
-| D4 | **Auth** | ✅ **Decided:** Google OAuth handled directly with the narrow `calendar.app.created` scope, plus email magic link for feed-only accounts. | Auth libraries make token *storage* opaque, and encrypted refresh tokens with rotation is precisely the part that must not be opaque. The narrow scope means the app can only touch calendars it created, which matches the dedicated-calendar default and is a far gentler consent screen. Consequence: "use an existing calendar" is not offered. |
-| D5 | **Geocoding** | `LocationProvider` interface (already in the engine); start with the built-in catalogue, add a provider when city coverage demands it. | Deferring the vendor choice costs nothing because the seam exists. |
-| D6 | **Test strategy for Google** | Contract tests against a recorded fixture set plus one live smoke account. No live API in CI. | Live-API CI is flaky and burns quota. |
+| D1 | **Runtime and hosting** | ✅ Next.js 15 (App Router) on **Vercel**, PostgreSQL on **Neon** | The workload is request/response plus a small amount of scheduled work. Reversible: the engine and the sync layer are plain TypeScript with no platform coupling, and `packages/service` takes a `ServiceContext` rather than reading globals. |
+| D2 | **Background jobs** | ✅ Postgres-backed `sync_jobs` with `FOR UPDATE SKIP LOCKED`, driven by **Vercel Cron** every 15 minutes | No Redis for a workload measured in thousands of writes a day, and `sync_jobs` was already the audit trail. Moving to a real queue later is a worker-side change; the table stays. The claim query needs a session-scoped connection, so the worker must use Neon's **direct** endpoint — `createDb({ requireDirectConnection: true })` asserts it. |
+| D3 | **ORM / migrations** | ✅ Plain SQL migrations with **Kysely** as the typed query layer. No Prisma. | The schema's constraints encode product rules an ORM would reinterpret. `packages/db/src/schema.ts` is a hand-maintained mirror of the SQL, and `schema-parity.test.ts` parses those types with the TypeScript compiler and diffs them against `information_schema` in both directions, so drift fails a test. |
+| D4 | **Auth** | ✅ Google OAuth handled directly, `calendar.app.created` only, plus `openid` and `userinfo.email` for identity | Auth libraries make token *storage* opaque, and encrypted refresh tokens with rotation is precisely the part that must not be opaque. Consequence: "use an existing calendar" is not offered, and cannot be — the scope forbids it. |
+| D5 | **Geocoding** | ✅ Built-in catalogue of 22 seed locations for now; `LocationProvider` seam stays | Deferring the vendor choice costs nothing because the seam exists. The dashboard's location picker offers the catalogue plus a time-zone suggestion the user must confirm. |
+| D6 | **Test strategy for Google** | ✅ A high-fidelity `fetch`-level double, plus one live smoke account when credentials exist. No live API in CI. | The double is faithful about the four behaviours the code depends on: no refresh token without `prompt=consent`, event IDs reserved forever after deletion, foreign calendars reported 404 not 403, and 403 covering both quota and permission. Live-API CI is flaky and burns quota. |
+
+---
+
+## Token encryption
+
+Application-layer **envelope encryption** with Google Cloud KMS, in the same GCP
+project as the Calendar OAuth client.
+
+A fresh 256-bit data key encrypts each secret locally with AES-256-GCM, and only
+that 32-byte key is sent to KMS to be wrapped. The refresh token never leaves
+the process. That keeps the KMS call small and cheap, and it keeps the blast
+radius of a KMS misconfiguration to "tokens cannot be read" rather than "tokens
+were disclosed".
+
+**Rotation works without reading any plaintext back.** KMS reports which crypto
+key *version* performed an encryption, and that version name is what goes into
+`encryption_key_id`. Decryption addresses the crypto *key*, and KMS finds the
+right version from the ciphertext — so a record sealed before a rotation stays
+readable with no migration, and the stale ones are found with one indexed query:
+
+```sql
+SELECT id FROM google_accounts WHERE encryption_key_id <> $current;
+```
+
+Re-wrapping happens lazily on the token read path, so rotation completes as
+accounts are used, with no batch job and no window where a record is unreadable.
+
+`KMS_KEY_NAME` naming a *version* is refused outright: pinning writes to a
+version would make rotating the key a silent no-op.
+
+The AES additional-authenticated-data binds each ciphertext to its own row — a
+purpose plus a subject, length-prefixed so the split cannot be shifted. Without
+it, a ciphertext lifted from one `google_accounts` row into another would decrypt
+cleanly and one user's calendar would be written with another user's token.
+
+`LocalKeyManager` exists so the whole OAuth path can be built and tested before
+a KMS key exists. It refuses to construct in production, checking `VERCEL_ENV`
+as well as `NODE_ENV` because a Vercel preview also runs with
+`NODE_ENV=production`. `resolveKeyManager()` is the only place that chooses
+between the two.
+
+---
+
+## Google OAuth scopes and verification
+
+Requested, and nothing else:
+
+| Scope | Why |
+|---|---|
+| `openid` | identity, so an account can exist |
+| `https://www.googleapis.com/auth/userinfo.email` | the account's email address |
+| `https://www.googleapis.com/auth/calendar.app.created` | read/write **only** on calendars this application created |
+
+Deliberately **not** requested: `calendar`, `calendar.events`,
+`calendar.readonly`, `calendar.calendarlist`, `profile`. A test in
+`packages/google-client` asserts the three broad calendar scopes never appear in
+an authorization URL.
+
+`calendar.app.created` is what makes the dedicated-calendar design a security
+property and not just a convention: the application cannot read the user's other
+calendars, cannot see their meetings, and cannot modify anything it did not
+make. A calendar it did not create is reported as 404, not 403 — it cannot even
+be enumerated.
+
+**Verification.** How Google classifies `calendar.app.created`, and therefore
+what verification is required and how long it takes, must be read from the
+Google Cloud Console for this specific project. This document deliberately does
+not state a classification or a duration: both change, and both are visible in
+the Console's OAuth consent screen page under the scope list. The OAuth flow is
+built and tested now precisely so that verification is not a blocker to
+development — the app works against a test OAuth client with the project in
+"Testing" mode and a small list of test users.
 
 ---
 
 ## Package layout
 
 ```
-packages/engine/           @hebrew-dates/engine           pure calculation, no I/O
-packages/sync/             @hebrew-dates/sync             reconciliation planning, pure
-packages/google-calendar/  @hebrew-dates/google-calendar  Google event payloads, pure
-packages/ical/             @hebrew-dates/ical             RFC 5545 rendering, no I/O
-apps/web/                  @hebrew-dates/web              Next.js UI + API routes
-db/migrations/             plain SQL, applied in order
-db/tests/                  constraint verification for the migrations
+                                                          pure, no I/O:
+packages/engine/           @hebrew-dates/engine           Hebrew dates and sunset
+packages/sync/             @hebrew-dates/sync             reconciliation planning
+packages/google-calendar/  @hebrew-dates/google-calendar  Google event payloads
+packages/ical/             @hebrew-dates/ical             RFC 5545 rendering
+
+                                                          one dependency each:
+packages/db/               @hebrew-dates/db               Kysely over the SQL schema
+packages/crypto/           @hebrew-dates/crypto           envelope encryption + KMS
+packages/google-client/    @hebrew-dates/google-client    OAuth + Calendar over fetch
+
+                                                          composition:
+packages/service/          @hebrew-dates/service          the use cases
+apps/web/                  @hebrew-dates/web              Next.js UI, routes, cron
+
+db/migrations/             plain SQL, applied in order — the authoritative schema
+db/tests/                  constraint verification by hand, in psql
 docs/                      this file and its siblings
 ```
 
-Note what all four packages have in common: **no network, no database, no
-credentials.** The riskiest logic in the product — the anniversary rules, the
-reconciliation decision table, and the exact shape of what gets written to
-someone's calendar — is all pure, so it is tested exhaustively in about two
-seconds. What remains for Phase 2 is an executor: something that takes a plan and
-a payload and performs HTTP.
+The first four packages have **no network, no database, no credentials.** The
+riskiest logic in the product — the anniversary rules, the reconciliation
+decision table, and the exact shape of what gets written to someone's calendar —
+is all pure, so it is tested exhaustively in about two seconds.
+
+The next three each depend on exactly one external thing and nothing else:
+`db` knows Postgres but not Google, `crypto` knows KMS but not what it is
+protecting, `google-client` knows Google but not what a Hebrew date is.
+
+`packages/service` is the only package that knows about all of them. It takes a
+`ServiceContext` — database, key manager, OAuth config, clock, calendar-client
+factory — rather than reading module-level globals, which is what lets the whole
+flow be tested end to end against a real PostgreSQL and a Google double with no
+environment variables at all.
 
 ### The two layers inside the engine
 
@@ -212,8 +303,10 @@ implemented as a status column plus `attempt_count` and `next_attempt_at`.
 | Stable IDs and hashing | `engine/ids.ts` | Shared by every destination |
 | Occurrence generation | `engine/occurrences.ts` | The only place both modes are computed |
 | Validation of user input | API route + engine | Engine throws `InvalidOriginError` for impossible dates |
-| OAuth tokens | `db` + KMS envelope encryption | Never in the engine, never logged |
-| Rate limiting and retries | worker (Phase 3) | Engine has no concept of failure |
+| OAuth tokens | `crypto` + `db` | Envelope-encrypted; never in the engine, never logged |
+| OAuth and Calendar HTTP | `google-client` | `fetch`-level, with failure classification |
+| Composition of all of it | `service` | The only package that knows about every other |
+| Rate limiting and retries | `google-client` + `service/sync.ts` | Classification decides *whether*; backoff decides *when* |
 
 ---
 
@@ -221,8 +314,11 @@ implemented as a status column plus `attempt_count` and `next_attempt_at`.
 
 | Simplification | Exit criterion |
 |---|---|
-| Location catalogue is a hard-coded list in the engine | Replaced by a `LocationProvider` backed by a geocoder when city coverage is inadequate (Phase 2) |
-| No database; the preview API is stateless | Phase 2, first thing |
-| Engine imports are extensionless and resolved by the bundler | If the worker needs to run the engine under plain Node ESM, add a `tsup`/`tsc` build step |
-| Hand-written CSS, no component library | When the UI grows past the prototype screens |
-| No auth | Phase 2 |
+| Location catalogue is a hard-coded list of 22 cities | Replaced by a `LocationProvider` backed by a geocoder when city coverage is inadequate. The seam exists; only the implementation is missing. |
+| ~~No database~~ | ✅ Done: Neon + Kysely, with the SQL authoritative. |
+| ~~No auth~~ | ✅ Done: Google OAuth with PKCE, sessions in Postgres. |
+| Engine imports are extensionless and resolved by the bundler | If the worker needs to run the engine under plain Node ESM, add a build step. The migration CLI already names its own imports with `.ts` for Node's type stripping. |
+| Hand-written CSS, no component library | When the UI grows past the prototype screens. |
+| The dashboard is one destination calendar per user | Family management (several members' calendars from one dataset) is designed for in the schema and the engine but not exposed in the UI. |
+| Reconciliation compares our rows against the engine, not against a live read of Google | Add a periodic `events.list` sweep filtered on `privateExtendedProperty` to find events the app lost track of. `listAllManagedEvents` exists for it and reports an incomplete page walk, so a truncated list can never drive a delete. |
+| Famous yahrzeits, the Apple/iCalendar subscription feed and the Hebrew UI are not wired up | Later phases. The engine and the `ical` package already render them. |

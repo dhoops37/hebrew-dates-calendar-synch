@@ -6,7 +6,7 @@ phase has an exit criterion that is checkable, not a feeling.
 | Phase | Outcome | Exit criterion |
 |---|---|---|
 | **1. Calculation prototype** ✅ | Tested engine + a UI that previews occurrences | 200+ engine tests green; a user can select a location, enter a date, preview 20 occurrences and switch display modes |
-| **2. Google Calendar MVP** | Persisted records, real Google sync | A record created in the UI appears correctly in Google Calendar and survives a re-sync without duplicating |
+| **2. Google Calendar MVP** ✅ | Persisted records, real Google sync | ✅ A record created in the UI appears correctly in Google Calendar and survives a re-sync without duplicating |
 | **3. Reliability** | Background jobs, reconciliation, deletion, export | Kill the worker mid-sync; the next run converges with no duplicates and no lost events |
 | **4. Apple subscription** | Private iCalendar feed | The feed validates against RFC 5545 and renders correctly on the tested device matrix |
 | **5. Famous yahrzeits** | Curated library + editorial workflow | No record publishable without a source; a correction propagates to future events only |
@@ -90,79 +90,118 @@ that decision #18 promoted from "future version" to required.
 
 ---
 
-## Phase 2 — Google Calendar MVP
+## Phase 2 — Google Calendar MVP ✅ core flow delivered
 
-### #16 — Provision PostgreSQL and apply `0001_init.sql`
-**Depends on:** architecture decision D1, D3
-Apply the reviewed migration, wire a typed query layer, add a smoke test that
-inserts and reads back one profile. Confirm the three CHECK constraints reject
-the inputs they are meant to reject — particularly the under-specified yahrzeit.
+The stop condition was: sign in → confirm location → add a Hebrew date → a
+dedicated Google calendar is created → real events are synchronised. That works,
+and is covered by 46 integration tests against a real PostgreSQL, real
+AES-256-GCM encryption, and a `fetch`-level Google double.
 
-**Done when:** migrations run in CI against a throwaway database and the
-constraint tests pass.
+- [x] `#16` Provision PostgreSQL and apply the migrations
+- [x] `#17` Google OAuth with `calendar.app.created`
+- [x] `#18` Dataset, destination calendar and location
+- [x] `#19` Source record CRUD *(create, pause, soft-delete; edit and duplicate in the UI remain)*
+- [x] `#20` Persist generated occurrences
+- [x] `#21` Google Calendar adapter
+- [x] `#22` Nearest-first synchronisation
+- [x] `#23` Reminders
+- [x] `#24` Dashboard *(minimum viable; see the gaps below)*
+- [x] `#25` Authorisation boundary test suite
 
-### #17 — Google OAuth with `calendar.app.created` (scope decided, #15)
-Authorisation code flow with PKCE, state validation, HTTP-only session cookie.
-Refresh tokens envelope-encrypted with a KMS-held key; `encryption_key_id`
-stored beside the ciphertext. Nothing token-shaped may reach a log.
+### #16 — Provision PostgreSQL and apply the migrations ✅
+Neon; `db/migrations/0001_init.sql` and `0002_auth_and_google.sql` applied by
+`pnpm db:migrate`, which refuses a pooled endpoint and reports what is applied.
+The runner is immutable-by-checksum, rolls a failing file back cleanly, and
+serialises concurrent runners on a pinned connection.
 
-**Done when:** connect, disconnect and re-connect all work; a revoked grant
-surfaces as `connection_status = 'needs_reauth'` rather than a 500; a log grep
-for the token prefix finds nothing.
-**Risk:** OAuth verification for calendar scopes takes weeks. Start the review
-submission at the beginning of this phase, not the end.
+**Done:** 40 constraint checks and 59 schema-parity assertions pass against
+PostgreSQL 16, and the suite skips rather than fails without a database.
 
-### #18 — Dataset, destination calendar and location
-Create a dataset and the owner's first destination calendar; create the dedicated
-"Hebrew Dates" calendar in Google; save a location with its IANA zone, seeded from
-the Google calendar's own `timeZone` (decision #11). Show the resolved location
-before saving (PRD 13.3).
+### #17 — Google OAuth with `calendar.app.created` ✅
+Authorisation code flow with PKCE S256, single-use `state` consumed from the
+database, HTTP-only session cookie. Refresh tokens envelope-encrypted with a
+KMS-wrapped data key; `encryption_key_id` stored beside the ciphertext and
+re-wrapped lazily on the read path. Access tokens are never persisted.
 
-**Done when:** a destination calendar has exactly one location, and changing it
-offers recalculation of that member's events only.
+**Done:** connect, disconnect and reconnect all work; a revoked grant surfaces
+as `connection_status = 'needs_reauth'` and stops that account's pending events
+rather than retrying; nothing token-shaped is logged, and the audit log records
+scopes only.
 
-### #19 — Source record CRUD
-Create, edit, pause, resume, delete, duplicate. Conditional validation for the
-Hebrew year. The "I am not sure" path blocks generation until resolved.
+**On the verification risk:** the flow is built and tested against a test OAuth
+client so verification is not a blocker to development. What Google requires,
+and how long it takes, must be read from the Console for this project rather
+than assumed — see ARCHITECTURE.md.
 
-**Done when:** the engine's `needs_user_decision` responses render as a choice
-the user can resolve, and an unresolved record generates nothing.
+### #18 — Dataset, destination calendar and location ✅
+Sign-in creates the owner, membership, dataset and first destination calendar in
+one transaction. `ensureGoogleCalendar` creates the dedicated calendar and is
+idempotent, verifying an existing one rather than creating a second; if the user
+deleted it in Google, the connection is cleared and the events recreated.
 
-### #20 — Persist generated occurrences
-Call the engine on save, write 20 years, store `occurrence_key`, `content_hash`,
-`rule_applied`, `ambiguities` and the location snapshot. Set
-`horizon_through_hebrew_year`.
+A location is stored with its IANA zone, kept separate from the calendar's own
+zone, and is not acted on until confirmed.
 
-**Done when:** re-saving an unchanged record produces zero row updates.
+**Done:** one location per destination (enforced by a unique constraint), and an
+unconfirmed one blocks the whole plan with `location_not_confirmed`.
 
-### #21 — Google Calendar adapter
-`packages/google-calendar`: insert/patch/delete with deterministic IDs,
-transparency `transparent`, per-event reminder overrides, occurrence and source
-IDs in private extended properties. 409 on insert means "exists" — fetch and
-compare, never create a second event.
+### #19 — Source record CRUD ✅ *(partially exposed)*
+Create, pause, resume and soft-delete are implemented and tested. The engine's
+`needs_user_decision` refusal is carried through as a typed error rather than
+resolved by a default.
 
-**Done when:** contract tests cover create, update, delete, 409, 403 revoked,
-404 deleted calendar and 429 rate-limited.
+**Remaining:** edit and duplicate are not in the dashboard yet, and the
+`needs_user_decision` response does not yet render as a choice the user can
+resolve — it currently surfaces as an explanatory error.
 
-### #22 — Nearest-first synchronisation
-Sync the next two Hebrew years synchronously so the user sees results, queue the
-rest. Show horizon progress (PRD 10.2).
+### #20 — Persist generated occurrences ✅
+`upsertOccurrences` writes on the natural key `(source_record_id, hebrew_year,
+sequence)`, storing `occurrence_key`, `rule_applied`, `ambiguities` and
+`calculation_version`. `horizon_through_hebrew_year` is maintained.
 
-**Done when:** a 30-record account completes its first sync without exceeding
-Google's per-calendar write rate.
+**Done:** re-saving an unchanged record updates in place and the sync issues no
+Google calls at all — the content-hash comparison happens before any network
+access.
 
-### #23 — Reminders
-Defaults per PRD 18.1–18.3, configurable per profile and per record. "At event
-start" means calculated sunset in Exact Sunset Mode.
+### #21 — Google Calendar adapter ✅
+`packages/google-client` over `fetch`. Insert/patch/delete with deterministic
+IDs, `transparency: transparent`, per-event reminder overrides, and provenance
+in private extended properties. A 409 on insert means "exists", never an error.
 
-### #24 — Dashboard
-Upcoming ten, my dates, calendar status, sync status, years generated. Flagged
-occurrences visibly marked with their explanation.
+**Done:** 114 tests cover create, update, delete, 409 duplicate, 403 revoked,
+403 rate-limited, 404 deleted calendar, 429, 500 and network failure.
 
-### #25 — Authorisation boundary test suite
-Every route, authenticated as user B, with user A's IDs. Nothing returns 200.
-**This is a Phase 2 deliverable, not a Phase 3 one** — it is cheapest to write
-while there are ten routes rather than forty.
+### #22 — Nearest-first synchronisation ✅
+Two Hebrew years synchronously, the remaining eighteen queued. Nearest-first
+ordering and the `maxWrites` budget are preserved; `hasMoreWork` requeues in
+seconds rather than with backoff.
+
+**Done:** a truncated pass provably keeps the earliest dates, asserted against
+the full ordered list.
+
+### #23 — Reminders ✅
+Defaults per PRD 18.1–18.3, seeded per destination calendar as data. A
+per-record override replaces the calendar default entirely.
+
+### #24 — Dashboard ✅ *(minimum viable)*
+Connect Google, confirm a location, create the calendar, add a date, see upcoming
+occurrences with a legible sync status, see recent background work, disconnect.
+
+**Remaining:** flagged occurrences are counted but their explanations are not
+rendered beside them; there is no edit or delete control; no horizon progress
+bar.
+
+### #25 — Authorisation boundary test suite ✅
+`packages/db/test/integration/tenancy.test.ts` attempts every dataset-scoped
+read and write as tenant B using tenant A's real IDs, plus the same at the
+service layer. Every attempt fails, and fails as "Not found" rather than
+"Forbidden", since distinguishing the two is itself a disclosure.
+
+### Deliberately out of scope for this phase
+
+Per the Phase 2 brief: famous yahrzeits, Apple/iCalendar subscription
+management, the Hebrew UI, and polished family management. The schema and the
+engine support all four; none is exposed.
 
 ---
 

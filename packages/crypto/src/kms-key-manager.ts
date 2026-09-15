@@ -228,5 +228,53 @@ function wrapKmsError(action: string, resource: string, error: unknown): KeyMana
 
 function createDefaultClient(): KmsLike {
   // REST rather than gRPC: see the module comment.
-  return new KeyManagementServiceClient({ fallback: 'rest' }) as unknown as KmsLike;
+  return new KeyManagementServiceClient({
+    fallback: 'rest',
+    ...serviceAccountCredentials(),
+  }) as unknown as KmsLike;
+}
+
+/**
+ * Credentials for a serverless platform with no writable credentials file.
+ *
+ * Application Default Credentials looks for `GOOGLE_APPLICATION_CREDENTIALS`,
+ * which is a *file path* — and on Vercel there is no file to point it at. So the
+ * service-account JSON is accepted inline via
+ * `GOOGLE_APPLICATION_CREDENTIALS_JSON` and passed to the client directly.
+ *
+ * Returns nothing when the variable is unset, which leaves ADC to do its normal
+ * job: that is the right behaviour on Cloud Run, GCE, or a developer machine
+ * with `gcloud auth application-default login`.
+ */
+function serviceAccountCredentials(): { credentials?: { client_email: string; private_key: string }; projectId?: string } {
+  const raw = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+  if (!raw) return {};
+
+  let parsed: { client_email?: string; private_key?: string; project_id?: string };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    throw new KeyManagerError(
+      'GOOGLE_APPLICATION_CREDENTIALS_JSON is not valid JSON. Paste the whole ' +
+        'service-account key file as a single value.',
+    );
+  }
+
+  if (!parsed.client_email || !parsed.private_key) {
+    throw new KeyManagerError(
+      'GOOGLE_APPLICATION_CREDENTIALS_JSON is missing client_email or private_key. ' +
+        'It should be the service-account key file downloaded from Google Cloud.',
+    );
+  }
+
+  return {
+    credentials: {
+      client_email: parsed.client_email,
+      // Some dashboards store the value with literal \n sequences rather than
+      // real newlines, which makes the key unparseable in a way that is very
+      // hard to diagnose from the error alone.
+      private_key: parsed.private_key.replace(/\\n/g, '\n'),
+    },
+    ...(parsed.project_id ? { projectId: parsed.project_id } : {}),
+  };
 }

@@ -247,3 +247,107 @@ details hidden even from people they have shared the calendar with.
 The vocabulary is now Google's own (`default` | `private`), not an invented pair,
 so the schema value maps straight onto the API field with no translation layer
 to get wrong. A CHECK constraint rejects anything else.
+
+## 5. Phase 2 infrastructure decisions — built
+
+Seven decisions, each recorded with what it cost and what reversing it would
+cost. All seven are implemented.
+
+### Hosting and database: Vercel + Neon
+
+`packages/service` takes a `ServiceContext` rather than reading globals, so
+neither choice reaches the logic. Reversing either is an `apps/web` change.
+
+One Neon-specific constraint is load-bearing rather than cosmetic: **the pooled
+and direct endpoints are not interchangeable.** The claim query uses
+`FOR UPDATE SKIP LOCKED` and migrations take a session-scoped advisory lock,
+both of which a transaction pooler silently breaks — not with an error, but by
+multiplexing the transaction across connections so the lock protects nothing. So
+`createDb({ requireDirectConnection: true })` refuses a URL containing
+`-pooler.`, and the message names `DATABASE_URL_DIRECT`.
+
+`sslmode=require` is likewise asserted rather than trusted: a silently
+unencrypted connection to a managed database is exactly the sort of thing nobody
+notices.
+
+### Query layer: Kysely, with the SQL authoritative
+
+The migrations in `db/migrations` are the schema. `packages/db/src/schema.ts` is
+a hand-maintained mirror of them, and a hand-maintained mirror drifts — somebody
+adds a column and forgets the interface, or renames one in the interface and the
+queries compile against a column that does not exist.
+
+So `schema-parity.test.ts` parses those types with the TypeScript compiler and
+diffs them against `information_schema` from a freshly migrated database, in
+both directions: every table, every column name, every nullability, and every
+defaulted column's insert-optionality. It also asserts that coordinates are
+`numeric` and not a float, that a Gregorian calendar day is `date` and not
+`timestamptz`, and that no column is named anything like `refresh_token` in
+plaintext.
+
+Verified that the test actually catches drift, not that it passes: renaming one
+column and flipping one nullability failed four and one assertions respectively.
+
+### Background jobs: Postgres, not a queue
+
+`sync_jobs` plus `FOR UPDATE SKIP LOCKED`, driven by Vercel Cron every 15
+minutes. A queue would be a second source of truth about what work exists.
+
+Jobs are idempotent by construction — each one is "make the destination match
+the dataset" — which is what makes at-least-once delivery acceptable. The worker
+reclaims abandoned jobs at the start of every tick, because Vercel can kill a
+function mid-run and without that one killed invocation leaves a dataset
+permanently un-synced with no visible error.
+
+### Token encryption: envelope encryption with Google Cloud KMS
+
+See ARCHITECTURE.md for the mechanism. The product decision is that
+`encryption_key_id` and rotation support are preserved: a key can be rotated
+without reading any token plaintext back, and records sealed under an older
+version stay readable.
+
+### Initial sync: two years now, eighteen later
+
+The request that adds a date writes the next two Hebrew years synchronously and
+queues the rest. The user must see their calendar populate on that request;
+nobody needs 2044 within two seconds.
+
+Nearest-first ordering and the `maxWrites` budget are preserved from the
+planner, so a truncated pass always keeps the years the user needs soonest.
+`hasMoreWork` requeues in seconds rather than with exponential backoff, because
+running out of write budget is throughput limiting and not a failure.
+
+### Reminder defaults, configurable
+
+| Type | Default reminders |
+|---|---|
+| Hebrew birthday | 1 day before, and at the start of the event |
+| Personal yahrzeit | 7 days before, 1 day before, and at the start |
+| Famous yahrzeit | 1 day before |
+
+Stored as `reminder_rules` rows, seeded per destination calendar, so changing
+them is data and not a deploy. A per-record override **replaces** the calendar
+default rather than merging: "remind me only on the day" must not leave the
+seven-day default behind. A `CHECK` constraint makes a rule scoped to a calendar
+or a record but never both.
+
+### Halachic review: not a blocker now, a gate before beta
+
+Development did not wait for it, and the parts a review would touch are all
+configurable or versioned so feedback can be incorporated without a schema
+redesign:
+
+- **Adar convention** — `source_records.calculation_convention`, per record,
+  defaulting to observing an ordinary-Adar yahrzeit in both Adars of a leap
+  year. Changing the default leaves existing records alone.
+- **Missing-30th behaviour** — named rules in the engine
+  (`docs/CALCULATION-RULES.md`), with the rule that fired stored on every
+  occurrence in `rule_applied`, so a change is auditable against what was
+  already written.
+- **Elevation** — `calendar_locations.use_elevation`, per location, default on.
+- **Warnings** — carried on each occurrence and stored in
+  `generated_occurrences.ambiguities`, so a year the review flags can be
+  surfaced to users without recalculating.
+- **Calculation version** — `generated_occurrences.calculation_version` records
+  which engine produced each row, so a rule change can be applied selectively
+  and the affected events updated rather than deleted and recreated.
