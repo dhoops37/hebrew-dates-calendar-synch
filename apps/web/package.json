@@ -9,8 +9,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hebrew-dates/crypto": "workspace:*",
+    "@hebrew-dates/db": "workspace:*",
     "@hebrew-dates/engine": "workspace:*",
+    "@hebrew-dates/google-calendar": "workspace:*",
+    "@hebrew-dates/google-client": "workspace:*",
     "@hebrew-dates/ical": "workspace:*",
+    "@hebrew-dates/service": "workspace:*",
+    "@hebrew-dates/sync": "workspace:*",
+    "kysely": "^0.28.2",
     "next": "^15.5.4",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"

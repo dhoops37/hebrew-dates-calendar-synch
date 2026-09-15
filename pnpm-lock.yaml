@@ -10,12 +10,33 @@ importers:
 
   apps/web:
     dependencies:
+      '@hebrew-dates/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
+      '@hebrew-dates/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@hebrew-dates/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@hebrew-dates/google-calendar':
+        specifier: workspace:*
+        version: link:../../packages/google-calendar
+      '@hebrew-dates/google-client':
+        specifier: workspace:*
+        version: link:../../packages/google-client
       '@hebrew-dates/ical':
         specifier: workspace:*
         version: link:../../packages/ical
+      '@hebrew-dates/service':
+        specifier: workspace:*
+        version: link:../../packages/service
+      '@hebrew-dates/sync':
+        specifier: workspace:*
+        version: link:../../packages/sync
+      kysely:
+        specifier: ^0.28.2
+        version: 0.28.17
       next:
         specifier: ^15.5.4
         version: 15.5.22(@opentelemetry/api@1.9.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
