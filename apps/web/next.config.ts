@@ -12,10 +12,11 @@ const nextConfig: NextConfig = {
     '@hebrew-dates/google-client',
     '@hebrew-dates/google-calendar',
     '@hebrew-dates/sync',
+    '@hebrew-dates/geocoding',
     '@hebrew-dates/service',
   ],
   // Native modules that must not be bundled into the serverless function.
-  serverExternalPackages: ['pg', '@google-cloud/kms'],
+  serverExternalPackages: ['pg', '@google-cloud/kms', 'tz-lookup'],
   // Route literals are type-checked, so a renamed page cannot leave a dead
   // link behind. Route *handlers* are not pages, so those are plain anchors.
   typedRoutes: true,

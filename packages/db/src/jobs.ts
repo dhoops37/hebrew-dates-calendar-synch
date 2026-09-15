@@ -187,8 +187,17 @@ export async function listRecentJobs(
     .execute();
 }
 
-/** Delete expired sessions and OAuth states. Cheap, and run from the same cron. */
+/**
+ * Delete expired sessions, OAuth states and rate-limit windows.
+ *
+ * Cheap, and run from the same cron. Each of these tables grows without bound
+ * otherwise — `rate_limits` one row per distinct caller, forever.
+ */
 export async function purgeExpired(db: Kysely<Database>, now = new Date()): Promise<void> {
   await db.deleteFrom('sessions').where('expires_at', '<', now).execute();
   await db.deleteFrom('oauth_states').where('expires_at', '<', now).execute();
+  await db
+    .deleteFrom('rate_limits')
+    .where('window_start', '<', new Date(now.getTime() - 24 * 60 * 60 * 1000))
+    .execute();
 }

@@ -546,3 +546,109 @@ a.cta:hover,
 a.cta:focus-visible {
   text-decoration: underline;
 }
+
+/* ------------------------------- edit, delete and the sunset question -- */
+
+/* The panel that needs the user's attention rather than time. */
+.card-attention {
+  border-inline-start: 4px solid var(--warning);
+}
+
+.card-attention h2 {
+  color: var(--warning);
+}
+
+.question + .question {
+  margin-block-start: 24px;
+  padding-block-start: 24px;
+  border-block-start: 1px solid var(--line);
+}
+
+/* A radio whose label is two lines: the Hebrew date, then what it means. */
+label.choice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-block-end: 8px;
+  cursor: pointer;
+  inline-size: 100%;
+}
+
+label.choice:hover,
+label.choice:focus-within {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+fieldset:has(label.choice) {
+  flex-direction: column;
+  gap: 0;
+  inline-size: 100%;
+}
+
+.list-plain {
+  list-style: none;
+  padding-inline-start: 0;
+}
+
+.place-row {
+  padding-block: 8px;
+  border-block-end: 1px solid var(--line);
+}
+
+.place-row form {
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.date-row {
+  padding-block: 14px;
+  border-block-end: 1px solid var(--line);
+}
+
+.date-row:last-child {
+  border-block-end: 0;
+}
+
+.date-row .page-header {
+  margin-block-end: 0;
+  align-items: flex-start;
+}
+
+/* An expanded edit or delete panel, set in from its row. */
+.inset {
+  margin-block-start: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+}
+
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+button.quiet.danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--line);
+}
+
+button.small {
+  padding: 5px 10px;
+  font-size: 0.85rem;
+}
+
+details summary {
+  cursor: pointer;
+}
+
+input[type='search'] {
+  min-inline-size: 16rem;
+}

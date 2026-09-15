@@ -19,6 +19,9 @@ importers:
       '@hebrew-dates/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@hebrew-dates/geocoding':
+        specifier: workspace:*
+        version: link:../../packages/geocoding
       '@hebrew-dates/google-calendar':
         specifier: workspace:*
         version: link:../../packages/google-calendar

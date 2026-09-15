@@ -9,6 +9,7 @@
  * read.
  */
 import { NextResponse } from 'next/server';
+import { checkRateLimit } from '@hebrew-dates/db';
 import { completeGoogleSignIn } from '@hebrew-dates/service';
 import {
   configProblems,
@@ -22,6 +23,17 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: Request): Promise<Response> {
   if (configProblems().length > 0) {
     return errorPage('This deployment is not configured for Google sign-in yet.', 503);
+  }
+
+  // Higher than the start route's limit: a legitimate retry loop lands here,
+  // and a refusal mid-sign-in is more confusing than one before it began.
+  const subject = ipPrefix(request.headers.get('x-forwarded-for')) ?? 'unknown';
+  const limit = await checkRateLimit(context().db, 'authCallback', subject);
+  if (!limit.allowed) {
+    return errorPage(
+      'Too many sign-in attempts from your network. Please wait a few minutes and try again.',
+      429,
+    );
   }
 
   const url = new URL(request.url);

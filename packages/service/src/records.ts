@@ -30,12 +30,16 @@ import {
 import {
   currentHebrewDateAt,
   formatCivilDate,
+  hebrewDateForDaytimeOf,
+  hebrewDateForEveningOf,
   resolveOccurrences,
   type AnniversaryOrigin,
   type CalculationConventions,
   type CalculationLocation,
+  type CivilDate,
   type HebrewMonthName,
   type HebrewOccurrence,
+  type InterpretedHebrewDate,
 } from '@hebrew-dates/engine';
 import type { ServiceContext } from './context';
 
@@ -106,6 +110,15 @@ export async function createHebrewDate(
 
   const record = await createSourceRecord(context.db, access, {
     ...input,
+    // A Gregorian entry's Hebrew date is *derived*, never taken from the
+    // caller. The web form has no Hebrew month to send in that mode, so it
+    // sends a placeholder; storing that placeholder would put a Hebrew date on
+    // the record that nothing computed. See `hebrewDateFromGregorianEntry`.
+    ...(input.originalGregorianDate
+      ? storedHebrewDateOf(
+          hebrewDateFromGregorianEntry(input.originalGregorianDate, input.sunsetStatus ?? null),
+        )
+      : {}),
     ...(awaitingSunset ? { active: false } : {}),
   });
 
@@ -134,6 +147,50 @@ export async function createHebrewDate(
   );
 
   return { record, ...generated, awaitingSunsetDecision: awaitingSunset };
+}
+
+/**
+ * The Hebrew date implied by a Gregorian date and a sunset answer.
+ *
+ * Two callers, one rule. `createHebrewDate` uses it when the answer is already
+ * known, and `resolveSunsetStatus` uses it when the answer arrives later; both
+ * must land on the same Hebrew date for the same inputs, which is only
+ * guaranteed if there is one function.
+ *
+ * With no answer yet (`null`) this returns the **before-sunset** reading as a
+ * provisional value. That is a derived candidate rather than a guess being
+ * acted on: the record is stored inactive, `sunset_status` stays null, and
+ * `unresolved_sunset_entry_cannot_be_active` stops anything being generated
+ * from it. The alternative — leaving whatever the form happened to send — puts
+ * a Hebrew date on the row that corresponds to neither candidate.
+ */
+export function hebrewDateFromGregorianEntry(
+  gregorianDate: string,
+  sunsetStatus: 'before_sunset' | 'after_sunset' | null,
+): InterpretedHebrewDate {
+  const civil = parseCivilDate(gregorianDate);
+  return sunsetStatus === 'after_sunset'
+    ? hebrewDateForEveningOf(civil)
+    : hebrewDateForDaytimeOf(civil);
+}
+
+/** That interpretation as the three columns `source_records` stores. */
+export function storedHebrewDateOf(interpreted: InterpretedHebrewDate): {
+  hebrewMonth: HebrewMonthName;
+  hebrewDay: number;
+  originalHebrewYear: number;
+} {
+  return {
+    hebrewMonth: interpreted.monthName,
+    hebrewDay: interpreted.hebrewDate.day,
+    originalHebrewYear: interpreted.hebrewDate.year,
+  };
+}
+
+/** Parse a `date` column or form field. Never via `new Date`, which adds a zone. */
+export function parseCivilDate(iso: string): CivilDate {
+  const [year, month, day] = iso.split('-').map(Number);
+  return { year: year as number, month: month as number, day: day as number };
 }
 
 export interface GenerateAndPersistResult {

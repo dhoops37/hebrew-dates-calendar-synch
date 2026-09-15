@@ -1,33 +1,46 @@
 /**
  * The dashboard.
  *
- * Deliberately minimal — this is the MVP surface the Phase 2 plan asks for:
- * connect Google, confirm a location, add a date, see sync status. Not a
- * polished product; enough of one to prove the whole path works and to be the
- * test environment Google's verification review can be pointed at.
+ * Still deliberately plain, but now covering the whole individual flow:
+ * connect Google, search for and confirm a location, add a date by Hebrew or
+ * English date, answer the sunset question when there is one, see sync status,
+ * edit, delete, pause.
  *
  * A server component. Everything it shows comes from one read model
- * (`dashboardView`), so there is no chance of two panels disagreeing about
- * whether the calendar exists.
+ * (`dashboardView`), so two panels cannot disagree about whether the calendar
+ * exists or whether a date is waiting on an answer.
  */
 import { redirect } from 'next/navigation';
-import { SEED_LOCATIONS } from '@hebrew-dates/engine';
-import { dashboardView, setupStatus } from '@hebrew-dates/service';
-import { configProblems, context, keyBackend, signedInUser } from '../../lib/server';
+import { dashboardView, listCataloguePlaces, setupStatus } from '@hebrew-dates/service';
+import {
+  configProblems,
+  context,
+  geocoderBackend,
+  keyBackend,
+  signedInUser,
+} from '../../lib/server';
 import {
   AddDateForm,
   CreateCalendarForm,
+  DateList,
   DisconnectForm,
-  LocationForm,
+  LocationPanel,
+  SunsetDecisionPanel,
   SyncNowForm,
 } from './DashboardForms';
 import {
   acceptSuggestionAction,
   addDateAction,
-  confirmLocationAction,
+  confirmPlaceAction,
   createCalendarAction,
+  deleteDateAction,
   disconnectAction,
+  editDateAction,
+  previewDeleteAction,
+  resolveSunsetAction,
+  searchPlacesAction,
   syncNowAction,
+  toggleDateActiveAction,
 } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -73,7 +86,9 @@ export default async function DashboardPage({
     userId: user.userId,
     destinationCalendarId: user.destinationCalendarId,
   });
+  const catalogue = await listCataloguePlaces(context());
   const keys = keyBackend();
+  const geocoder = geocoderBackend();
 
   return (
     <main id="main" className="page">
@@ -92,8 +107,8 @@ export default async function DashboardPage({
       {query.scope === 'insufficient' ? (
         <p className="notice notice-warning">
           Google did not grant permission to manage calendars, so nothing can be written yet.{' '}
-          <a href="/auth/google/start">Sign in again</a> and leave the calendar
-          permission ticked.
+          <a href="/auth/google/start">Sign in again</a> and leave the calendar permission
+          ticked.
         </p>
       ) : null}
 
@@ -109,24 +124,60 @@ export default async function DashboardPage({
         <p className="notice notice-ok">
           <strong>Next step:</strong> {STEP_LABELS[status.nextStep]}
         </p>
-      ) : (
+      ) : view.sunsetQuestions.length === 0 ? (
         <p className="notice notice-ok">
           Everything is set up. {view.counts.synced} event
           {view.counts.synced === 1 ? '' : 's'} in your calendar.
         </p>
-      )}
+      ) : null}
+
+      {/* -------------------------------------------- the sunset question -- */}
+      {/* First, above everything else: it is the only thing blocking a date
+          from reaching the calendar, and it needs the user rather than time. */}
+      <SunsetDecisionPanel
+        action={resolveSunsetAction}
+        questions={view.sunsetQuestions.map((question) => ({
+          sourceRecordId: question.sourceRecordId,
+          displayName: question.displayName,
+          gregorianDate: question.decision.gregorianDate,
+          candidates: question.decision.candidates.map((candidate) => ({
+            choice: candidate.choice,
+            hebrewDateLabel: candidate.hebrewDateLabel,
+            meaning: candidate.meaning,
+          })),
+          sunset: question.decision.sunset
+            ? {
+                localTime: question.decision.sunset.localTime,
+                locationDisplayName: question.decision.sunset.locationDisplayName,
+              }
+            : undefined,
+          explanation: question.decision.explanation,
+          whereToLook: question.decision.whereToLook,
+        }))}
+      />
 
       {/* ------------------------------------------------------- location -- */}
-      <LocationForm
-        options={SEED_LOCATIONS.map((location) => ({
-          id: location.id,
-          displayName: location.displayName,
-          timezoneId: location.timezoneId,
-        }))}
-        confirmAction={confirmLocationAction}
+      <LocationPanel
+        searchAction={searchPlacesAction}
+        confirmAction={confirmPlaceAction}
         acceptSuggestionAction={acceptSuggestionAction}
-        currentDisplayName={
-          view.location?.confirmed ? view.location.displayName : undefined
+        liveSearchEnabled={geocoder?.liveSearchEnabled ?? false}
+        catalogue={catalogue.map((place) => ({
+          id: place.id,
+          displayName: place.displayName,
+          shortName: place.shortName,
+          timezoneId: place.timezoneId,
+          provider: place.provider,
+          hasElevation: place.elevationMeters !== undefined,
+        }))}
+        current={
+          view.location?.confirmed
+            ? {
+                displayName: view.location.displayName,
+                timezoneId: view.location.timezoneId,
+                source: view.location.source,
+              }
+            : undefined
         }
       />
 
@@ -146,6 +197,15 @@ export default async function DashboardPage({
           </p>
         </section>
       )}
+
+      {/* ------------------------------------------------- your dates list -- */}
+      <DateList
+        rows={view.records}
+        editAction={editDateAction}
+        previewDeleteAction={previewDeleteAction}
+        deleteAction={deleteDateAction}
+        toggleActiveAction={toggleDateActiveAction}
+      />
 
       {/* --------------------------------------------------------- status -- */}
       <section className="card">
@@ -212,28 +272,6 @@ export default async function DashboardPage({
         )}
       </section>
 
-      {/* ------------------------------------------------------ your dates -- */}
-      {view.records.length > 0 ? (
-        <section className="card">
-          <h2>Your dates</h2>
-          <ul className="list">
-            {view.records.map((record) => (
-              <li key={record.id}>
-                <strong>{record.displayName}</strong>{' '}
-                <span className="muted">
-                  {record.type === 'birthday' ? 'birthday' : 'yahrzeit'} ·{' '}
-                  {record.hebrewDateLabel}
-                  {record.horizonThroughHebrewYear
-                    ? ` · calculated through ${record.horizonThroughHebrewYear}`
-                    : null}
-                  {record.active ? '' : ' · paused'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
       {/* ---------------------------------------------------- diagnostics -- */}
       <section className="card">
         <h2>Connection</h2>
@@ -250,6 +288,7 @@ export default async function DashboardPage({
             )}
           </li>
           <li>Location: {view.location?.displayName ?? 'not set'}</li>
+          {geocoder ? <li>Place search: {geocoder.description}</li> : null}
           {keys ? <li>Token encryption: {keys.description}</li> : null}
         </ul>
 

@@ -515,6 +515,32 @@ describe.runIf(hasDatabase)('deleting a date', () => {
     expect(preview.pastEventsToKeep).toBe(0);
     expect(preview.summary).toContain('Nothing has been written');
   });
+
+  it('deletes a draft still waiting on the sunset question', async () => {
+    // Editing a draft is refused, but deleting must not be: someone who typed
+    // the wrong date should not have to answer a question about it first.
+    const draft = await createHebrewDate(harness.context, session.access, {
+      ...YAHRZEIT,
+      displayName: 'Mistyped',
+      originalGregorianDate: '1990-04-09',
+    });
+
+    const result = await deleteHebrewDate(harness.context, session.access, {
+      sourceRecordId: draft.record.id,
+      userId: session.userId,
+      destinationCalendarId: session.destinationCalendarId,
+    });
+
+    expect(result.futureEventsRemoved).toBe(0);
+    expect(result.pastEventsKept).toBe(0);
+
+    const remaining = await harness.db
+      .selectFrom('source_records')
+      .select('deleted_at')
+      .where('id', '=', draft.record.id)
+      .executeTakeFirstOrThrow();
+    expect(remaining.deleted_at).not.toBeNull();
+  });
 });
 
 /* ------------------------------------------------------------------- pause -- */

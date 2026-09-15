@@ -175,6 +175,23 @@ describe.runIf(hasDatabase)('an unresolved Gregorian entry', () => {
     expect(created.occurrencesPersisted).toBe(0);
   });
 
+  it('derives the stored Hebrew date rather than keeping what was sent', async () => {
+    // The web form has no Hebrew month to send in Gregorian mode, so it sends a
+    // placeholder. Storing that placeholder would put a Hebrew date on the
+    // record that corresponds to neither candidate — here, 1 Tishrei for a
+    // death on 9 April. The draft holds the before-sunset reading instead.
+    const created = await createHebrewDate(harness.context, session.access, {
+      ...GREGORIAN_ENTRY,
+      hebrewMonth: 'TISHREI',
+      hebrewDay: 1,
+      originalHebrewYear: undefined,
+    });
+
+    expect(created.record.hebrew_month).toBe('NISAN');
+    expect(created.record.hebrew_day).toBe(14);
+    expect(created.record.original_hebrew_year).toBe(5750);
+  });
+
   it('generates nothing and writes nothing to the calendar', async () => {
     await createHebrewDate(harness.context, session.access, GREGORIAN_ENTRY);
 
@@ -276,6 +293,48 @@ describe.runIf(hasDatabase)('answering the sunset question', () => {
   });
 
   it.each([
+    ['before_sunset' as const, 'NISAN', 14],
+    ['after_sunset' as const, 'NISAN', 15],
+  ])(
+    'answering %s at entry time reaches the same Hebrew date as answering later',
+    async (sunsetStatus, expectedMonth, expectedDay) => {
+      // Two routes to the same record: the user knew at entry, or the user
+      // answered the question afterwards. They must not disagree.
+      const atEntry = await createHebrewDate(harness.context, session.access, {
+        ...GREGORIAN_ENTRY,
+        hebrewMonth: 'TISHREI',
+        hebrewDay: 1,
+        originalHebrewYear: undefined,
+        sunsetStatus,
+      });
+
+      expect(atEntry.awaitingSunsetDecision).toBe(false);
+      expect(atEntry.record.active).toBe(true);
+      expect(atEntry.record.hebrew_month).toBe(expectedMonth);
+      expect(atEntry.record.hebrew_day).toBe(expectedDay);
+      expect(atEntry.record.original_hebrew_year).toBe(5750);
+      expect(atEntry.occurrencesPersisted).toBeGreaterThan(0);
+
+      const draft = await createHebrewDate(harness.context, session.access, {
+        ...GREGORIAN_ENTRY,
+        displayName: 'Answered later',
+        hebrewMonth: 'TISHREI',
+        hebrewDay: 1,
+        originalHebrewYear: undefined,
+      });
+      const answered = await resolveSunsetStatus(harness.context, session.access, {
+        sourceRecordId: draft.record.id,
+        choice: sunsetStatus,
+        destinationCalendarId: session.destinationCalendarId,
+      });
+
+      expect(answered.record.hebrew_month).toBe(atEntry.record.hebrew_month);
+      expect(answered.record.hebrew_day).toBe(atEntry.record.hebrew_day);
+      expect(answered.record.original_hebrew_year).toBe(atEntry.record.original_hebrew_year);
+    },
+  );
+
+  it.each([
     ['before_sunset' as const, 14],
     ['after_sunset' as const, 15],
   ])('records %s and settles on %s Nisan', async (choice, expectedDay) => {
@@ -296,24 +355,25 @@ describe.runIf(hasDatabase)('answering the sunset question', () => {
   });
 
   it('recomputes the Hebrew date rather than trusting the request', async () => {
-    // The form sends only which of the two it was. Even if a request arrived
-    // claiming some other Hebrew date, the stored value comes from the
-    // Gregorian date and the choice.
+    // The form sends only which of the two it was. A Hebrew month supplied
+    // alongside a Gregorian date is discarded at both steps: on creation, where
+    // the before-sunset reading is derived, and on the answer, where the chosen
+    // reading is.
     const created = await createHebrewDate(harness.context, session.access, {
       ...GREGORIAN_ENTRY,
-      // Deliberately wrong: the draft was created with a placeholder month/day.
+      // Deliberately wrong. Neither candidate is in Elul.
       hebrewMonth: 'ELUL',
       hebrewDay: 1,
     });
-    expect(created.record.hebrew_month).toBe('ELUL');
+    expect(created.record.hebrew_month).toBe('NISAN');
 
     const resolved = await resolveSunsetStatus(harness.context, session.access, {
       sourceRecordId: created.record.id,
-      choice: 'before_sunset',
+      choice: 'after_sunset',
       destinationCalendarId: session.destinationCalendarId,
     });
     expect(resolved.record.hebrew_month).toBe('NISAN');
-    expect(resolved.record.hebrew_day).toBe(14);
+    expect(resolved.record.hebrew_day).toBe(15);
   });
 
   it('writes events to the calendar once answered', async () => {

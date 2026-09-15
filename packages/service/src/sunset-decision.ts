@@ -43,6 +43,8 @@ import {
   anchorLocation,
   destinationLocation,
   generateAndPersist,
+  hebrewDateFromGregorianEntry,
+  storedHebrewDateOf,
 } from './records';
 
 export type SunsetChoice = 'before_sunset' | 'after_sunset';
@@ -212,20 +214,19 @@ export async function resolveSunsetStatus(
   if (record.original_gregorian_date === null) throw new NotAwaitingSunsetError();
   if (record.sunset_status !== null) throw new SunsetAlreadyResolvedError();
 
-  const gregorianDate = parseCivil(record.original_gregorian_date);
-  const interpreted =
-    params.choice === 'before_sunset'
-      ? hebrewDateForDaytimeOf(gregorianDate)
-      : hebrewDateForEveningOf(gregorianDate);
+  // The same derivation `createHebrewDate` uses, so answering later cannot
+  // produce a different Hebrew date than answering at entry time would have.
+  const interpreted = hebrewDateFromGregorianEntry(record.original_gregorian_date, params.choice);
+  const stored = storedHebrewDateOf(interpreted);
 
   const updated = await context.db
     .updateTable('source_records')
     .set({
       sunset_status: params.choice,
       // Recomputed, never trusted from the request.
-      hebrew_month: interpreted.monthName,
-      hebrew_day: interpreted.hebrewDate.day,
-      original_hebrew_year: interpreted.hebrewDate.year,
+      hebrew_month: stored.hebrewMonth,
+      hebrew_day: stored.hebrewDay,
+      original_hebrew_year: stored.originalHebrewYear,
       // The draft becomes real. The CHECK constraint allowed this only once
       // `sunset_status` was set, which is the guarantee that matters.
       active: true,

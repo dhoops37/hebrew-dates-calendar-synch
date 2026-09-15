@@ -17,6 +17,11 @@ import {
 import { formatHebrewDateEnglish, type HebrewMonthNumber } from '@hebrew-dates/engine';
 import type { ServiceContext } from './context';
 import { connectionHealth } from './tokens';
+import {
+  needsSunsetDecision,
+  pendingSunsetDecision,
+  type SunsetDecision,
+} from './sunset-decision';
 
 export interface UpcomingOccurrence {
   occurrenceKey: string;
@@ -50,8 +55,32 @@ export interface DashboardView {
     displayName: string;
     type: SourceRecordRow['type'];
     hebrewDateLabel: string;
+    hebrewMonth: string;
+    hebrewDay: number;
+    originalHebrewYear: number | null;
+    relationship: string | null;
+    notes: string | null;
     active: boolean;
     horizonThroughHebrewYear: number | null;
+    /** True while the sunset question is unanswered. Nothing is generated. */
+    awaitingSunsetDecision: boolean;
+    /** True when the user gave an English date rather than a Hebrew one. */
+    enteredAsGregorian: boolean;
+    /**
+     * The date as the user typed it, for a Gregorian entry.
+     *
+     * The list shows this rather than `hebrewDateLabel` while the sunset
+     * question is open: the stored Hebrew date is then only the before-sunset
+     * reading, and showing it next to an unanswered question would read as the
+     * answer.
+     */
+    gregorianEntryDate: string | null;
+  }[];
+  /** The sunset questions outstanding, ready to render. */
+  sunsetQuestions: {
+    sourceRecordId: string;
+    displayName: string;
+    decision: SunsetDecision;
   }[];
   upcoming: UpcomingOccurrence[];
   counts: { records: number; occurrences: number; synced: number; pending: number; failed: number };
@@ -139,6 +168,21 @@ export async function dashboardView(
     .limit(params.upcomingLimit ?? 25)
     .execute();
 
+  // The outstanding sunset questions, resolved here so the page renders them
+  // without another round of derivation.
+  const sunsetQuestions = await Promise.all(
+    records
+      .filter((record) => needsSunsetDecision(record))
+      .map(async (record) => ({
+        sourceRecordId: record.id,
+        displayName: record.display_name,
+        decision: (await pendingSunsetDecision(context, access, {
+          sourceRecordId: record.id,
+          destinationCalendarId: params.destinationCalendarId,
+        })) as SunsetDecision,
+      })),
+  );
+
   const counts = await context.db
     .selectFrom('destination_events')
     .innerJoin(
@@ -194,9 +238,18 @@ export async function dashboardView(
         month: monthNumberFromName(record.hebrew_month),
         day: record.hebrew_day,
       }),
+      hebrewMonth: record.hebrew_month,
+      hebrewDay: record.hebrew_day,
+      originalHebrewYear: record.original_hebrew_year,
+      relationship: record.relationship,
+      notes: record.notes,
       active: record.active,
       horizonThroughHebrewYear: record.horizon_through_hebrew_year,
+      awaitingSunsetDecision: needsSunsetDecision(record),
+      enteredAsGregorian: record.original_gregorian_date !== null,
+      gregorianEntryDate: record.original_gregorian_date,
     })),
+    sunsetQuestions,
     upcoming: upcomingRows.map((row) => ({
       occurrenceKey: row.occurrence_key,
       sourceRecordId: row.source_record_id,

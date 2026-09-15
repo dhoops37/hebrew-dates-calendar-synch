@@ -18,6 +18,7 @@
 import { cookies } from 'next/headers';
 import { createDb, type Database } from '@hebrew-dates/db';
 import { resolveKeyManager } from '@hebrew-dates/crypto';
+import { resolveGeocoder, type ResolvedGeocoder } from '@hebrew-dates/geocoding';
 import type { OAuthConfig } from '@hebrew-dates/google-client';
 import { buildContext, currentUser, type CurrentUser, type ServiceContext } from '@hebrew-dates/service';
 import type { Kysely } from 'kysely';
@@ -32,6 +33,12 @@ export interface ConfigProblem {
 /** Cached per process; a serverless instance reuses its own pool. */
 let cachedDb: Kysely<Database> | undefined;
 let cachedContext: ServiceContext | undefined;
+/**
+ * Cached because the Nominatim provider holds a request queue and a result
+ * cache. Building a new one per request would defeat both, and would breach
+ * the one-request-per-second policy the moment two requests overlapped.
+ */
+let cachedGeocoder: ResolvedGeocoder | undefined;
 
 export function configProblems(): ConfigProblem[] {
   const problems: ConfigProblem[] = [];
@@ -104,9 +111,43 @@ export function context(): ServiceContext {
       keys: resolveKeyManager().keys,
       oauth: oauthConfig(),
       appUrl: process.env.APP_URL as string,
+      geocoder: geocoder().geocoder,
     });
   }
   return cachedContext;
+}
+
+/**
+ * The place-search backend.
+ *
+ * Built once per process. Falls back to catalogue-only when
+ * `GEOCODER_USER_AGENT` is unset, because OpenStreetMap's policy requires a
+ * User-Agent that identifies the deployment and inventing a generic one on
+ * someone's behalf is how an application gets blocked.
+ */
+export function geocoder(): ResolvedGeocoder {
+  if (!cachedGeocoder) {
+    cachedGeocoder = resolveGeocoder(process.env, {
+      onPrimaryFailure: (error) => {
+        // Logged, not swallowed: a geocoder that is quietly down means every
+        // user silently gets 22 cities.
+        console.warn(
+          '[geocoding] live search failed, falling back to the built-in city list:',
+          error instanceof Error ? error.message : error,
+        );
+      },
+    });
+  }
+  return cachedGeocoder;
+}
+
+/** Which place-search backend is in use, for the diagnostics panel. */
+export function geocoderBackend(): { description: string; liveSearchEnabled: boolean } {
+  const resolved = geocoder();
+  return {
+    description: resolved.description,
+    liveSearchEnabled: resolved.liveSearchEnabled,
+  };
 }
 
 /** Which encryption backend is in use, for the diagnostics panel. */

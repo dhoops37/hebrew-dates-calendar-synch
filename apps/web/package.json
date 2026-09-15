@@ -12,6 +12,7 @@
     "@hebrew-dates/crypto": "workspace:*",
     "@hebrew-dates/db": "workspace:*",
     "@hebrew-dates/engine": "workspace:*",
+    "@hebrew-dates/geocoding": "workspace:*",
     "@hebrew-dates/google-calendar": "workspace:*",
     "@hebrew-dates/google-client": "workspace:*",
     "@hebrew-dates/ical": "workspace:*",
