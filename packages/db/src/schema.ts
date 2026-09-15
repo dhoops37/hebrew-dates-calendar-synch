@@ -320,6 +320,14 @@ export interface RateLimitsTable {
   updated_at: Timestamp;
 }
 
+export interface OutboundThrottleTable {
+  /** One row per rate-limited upstream, e.g. `nominatim`. */
+  throttle_key: string;
+  /** The earliest instant the next outbound request may be sent. */
+  next_available_at: TimestampRequired;
+  updated_at: Timestamp;
+}
+
 export interface SchemaMigrationsTable {
   filename: string;
   applied_at: Timestamp;
@@ -344,6 +352,7 @@ export interface Database {
   google_calendar_connections: GoogleCalendarConnectionsTable;
   audit_log: AuditLogTable;
   rate_limits: RateLimitsTable;
+  outbound_throttle: OutboundThrottleTable;
   schema_migrations: SchemaMigrationsTable;
 }
 

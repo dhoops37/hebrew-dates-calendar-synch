@@ -12,5 +12,6 @@ export * from './access';
 export * from './repositories';
 export * from './audit';
 export * from './rate-limit';
+export * from './outbound-throttle';
 export * from './jobs';
 export * from './sessions';

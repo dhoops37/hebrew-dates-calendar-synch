@@ -39,7 +39,7 @@ Do them in this order — each one produces a value the next needs.
    pnpm db:status                                 # all three should be APPLIED
    ```
 
-   There are three migrations. `0003_rate_limits_and_geocoding.sql` is the one
+   There are four migrations. `0003_rate_limits_and_geocoding.sql` is the one
    worth knowing about, because it changes a rule rather than only adding
    columns:
 
@@ -56,6 +56,10 @@ Do them in this order — each one produces a value the next needs.
      may not be **active** — so the refusal to guess is enforced by the database,
      and no code path, including one written later, can generate occurrences
      from a guess.
+
+   `0004_outbound_throttle.sql` adds one small table, `outbound_throttle`, which
+   holds the shared one-request-per-second reservation for OpenStreetMap's
+   Nominatim. It has one row per upstream and never grows, so it needs no purge.
 
    `db:migrate` is safe to re-run: applied migrations are immutable by checksum
    and re-running is a no-op.
@@ -167,24 +171,62 @@ One project holds both the OAuth client and the KMS key.
    says which backend is in use.
 
    Put a real contact address in it. An application that cannot be contacted
-   about a problem gets blocked rather than emailed. The client sends at most
-   one request per second and caches results for ten minutes; if Nominatim is
-   unreachable the request falls back to the built-in list rather than failing,
-   and logs a warning so a quiet outage is visible.
+   about a problem gets blocked rather than emailed.
+
+   Two further variables exist and are optional:
+
+   | Variable | Effect |
+   |---|---|
+   | `GEOCODER_ENDPOINT` | Point at a self-hosted Nominatim or a compatible mirror instead of the public service. |
+   | `GEOCODER_UNTHROTTLED` | `1` lifts the shared one-request-per-second gate. **Only honoured together with `GEOCODER_ENDPOINT`**, because lifting it against the public service is precisely what its policy forbids. |
+
+   The one-per-second limit is enforced **application-wide**, not per user and
+   not per instance: the reservation lives in the `outbound_throttle` table, so
+   however many Vercel instances are warm, they take turns from one shared
+   queue. If the queue is more than six seconds deep the search falls back to
+   the built-in city list rather than leaving someone watching a spinner.
+   Results are cached for ten minutes, including confirmations, so refining a
+   search or stepping back does not re-ask. An unreachable Nominatim degrades to
+   the built-in list and logs a warning, so a quiet outage is visible.
+
+   The dashboard's Connection panel states which backend is in use and whether
+   the shared limit is in force. If it ever says the limit is **not** in force
+   while live search is on, stop and fix that before letting anyone else use the
+   deployment.
 
    Do **not** set `LOCAL_ENVELOPE_MASTER_KEY` in production. The application
    refuses to start with it and no KMS key, checking `VERCEL_ENV` as well as
    `NODE_ENV` — a Vercel preview also runs with `NODE_ENV=production`.
 
-3. **Cron.** `vercel.json` registers `/api/cron/sync` every 15 minutes. Vercel
-   sends `Authorization: Bearer $CRON_SECRET` automatically. The endpoint
-   refuses to run at all without `CRON_SECRET` set, rather than defaulting to
-   open: anyone able to call it could exhaust the Google quota every user
-   depends on.
+3. **Cron.** `vercel.json` registers `/api/cron/sync` **once a day at 03:00
+   UTC** (`0 3 * * *`). Vercel sends `Authorization: Bearer $CRON_SECRET`
+   automatically. The endpoint refuses to run at all without `CRON_SECRET` set,
+   rather than defaulting to open: anyone able to call it could exhaust the
+   Google quota every user depends on.
 
-   Note that Vercel's Hobby plan allows cron only once per day. If you are on
-   Hobby, either upgrade or change the schedule in `vercel.json` to `0 3 * * *`
-   and accept that the horizon extends overnight rather than within minutes.
+   Daily is chosen so the repository deploys on **Vercel Hobby**, which permits
+   cron only once per day and will reject a more frequent schedule. Nothing the
+   private beta needs is lost by it — see below.
+
+   **What the daily schedule delays.** Adding a date writes the first two
+   Hebrew years synchronously, so events appear in Google Calendar
+   immediately; the remaining eighteen are queued and arrive on the next tick.
+   Retries after a transient Google failure also wait for a tick. Neither
+   matters for personal use, and **Sync now** on the dashboard runs the same
+   work on demand whenever you do not want to wait.
+
+   **Switching back on Vercel Pro.** Change the one line in `vercel.json`:
+
+   ```json
+   "crons": [{ "path": "/api/cron/sync", "schedule": "*/15 * * * *" }]
+   ```
+
+   and redeploy — the schedule is read from the deployed `vercel.json`, so there
+   is nothing to configure in the dashboard. Every-15-minutes is what the design
+   assumes: `maxDuration` is 60s, the runner has its own smaller time budget and
+   requeues what it cannot finish, and jobs are idempotent under
+   `FOR UPDATE SKIP LOCKED`, so overlapping invocations claim different work.
+   Nothing else needs to change at any frequency down to about a minute.
 
 4. Deploy, then visit `/dashboard`. If anything is missing it names the exact
    variable rather than returning a blank error.

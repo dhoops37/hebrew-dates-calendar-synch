@@ -16,9 +16,13 @@
  *    limit under any load at all.
  */
 import { cookies } from 'next/headers';
-import { createDb, type Database } from '@hebrew-dates/db';
+import { createDb, reserveThrottleSlot, type Database } from '@hebrew-dates/db';
 import { resolveKeyManager } from '@hebrew-dates/crypto';
-import { resolveGeocoder, type ResolvedGeocoder } from '@hebrew-dates/geocoding';
+import {
+  resolveGeocoder,
+  type OutboundGate,
+  type ResolvedGeocoder,
+} from '@hebrew-dates/geocoding';
 import type { OAuthConfig } from '@hebrew-dates/google-client';
 import { buildContext, currentUser, type CurrentUser, type ServiceContext } from '@hebrew-dates/service';
 import type { Kysely } from 'kysely';
@@ -124,10 +128,17 @@ export function context(): ServiceContext {
  * `GEOCODER_USER_AGENT` is unset, because OpenStreetMap's policy requires a
  * User-Agent that identifies the deployment and inventing a generic one on
  * someone's behalf is how an application gets blocked.
+ *
+ * The gate is the part that makes this compliant rather than merely polite.
+ * OpenStreetMap's limit is one request per second from the *application*, and
+ * this application is however many Vercel instances happen to be warm. So the
+ * reservation lives in Postgres, which is the only thing all the instances
+ * share, and each request takes its turn from there.
  */
 export function geocoder(): ResolvedGeocoder {
   if (!cachedGeocoder) {
     cachedGeocoder = resolveGeocoder(process.env, {
+      gate: postgresOutboundGate(),
       onPrimaryFailure: (error) => {
         // Logged, not swallowed: a geocoder that is quietly down means every
         // user silently gets 22 cities.
@@ -141,12 +152,43 @@ export function geocoder(): ResolvedGeocoder {
   return cachedGeocoder;
 }
 
+/**
+ * The shared one-per-second reservation, as an `OutboundGate`.
+ *
+ * `maxWaitMs` is the interesting number. Six seconds means up to six requests
+ * may be queued ahead of yours before the gate says "don't bother" and the
+ * search degrades to the built-in city list. A user waiting six seconds for a
+ * search is poor; a user waiting forty is broken, and silently getting 22
+ * cities is better than either.
+ */
+function postgresOutboundGate(): OutboundGate {
+  return {
+    async reserve() {
+      const slot = await reserveThrottleSlot(database(), {
+        key: 'nominatim',
+        // 1100ms rather than 1000: the policy is an absolute maximum, and clock
+        // skew between instances should not be what puts us over it.
+        minIntervalMs: 1100,
+        maxWaitMs: 6_000,
+      });
+      return { granted: slot.granted, waitMs: slot.waitMs };
+    },
+  };
+}
+
 /** Which place-search backend is in use, for the diagnostics panel. */
-export function geocoderBackend(): { description: string; liveSearchEnabled: boolean } {
+export function geocoderBackend(): {
+  description: string;
+  liveSearchEnabled: boolean;
+  globallyThrottled: boolean;
+  attribution: { text: string; url: string; licence: string } | undefined;
+} {
   const resolved = geocoder();
   return {
     description: resolved.description,
     liveSearchEnabled: resolved.liveSearchEnabled,
+    globallyThrottled: resolved.globallyThrottled,
+    attribution: resolved.attribution,
   };
 }
 

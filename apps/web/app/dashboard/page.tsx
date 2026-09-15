@@ -162,6 +162,7 @@ export default async function DashboardPage({
         confirmAction={confirmPlaceAction}
         acceptSuggestionAction={acceptSuggestionAction}
         liveSearchEnabled={geocoder?.liveSearchEnabled ?? false}
+        attribution={geocoder?.attribution}
         catalogue={catalogue.map((place) => ({
           id: place.id,
           displayName: place.displayName,
@@ -288,7 +289,21 @@ export default async function DashboardPage({
             )}
           </li>
           <li>Location: {view.location?.displayName ?? 'not set'}</li>
-          {geocoder ? <li>Place search: {geocoder.description}</li> : null}
+          {geocoder ? (
+            <li>
+              Place search: {geocoder.description}
+              {geocoder.liveSearchEnabled ? (
+                geocoder.globallyThrottled ? (
+                  <span className="muted small"> · shared 1 request/second limit in force</span>
+                ) : (
+                  // Worth saying loudly. Live search against the public
+                  // endpoint with no shared gate breaches OpenStreetMap's
+                  // policy, and the consequence is being blocked.
+                  <strong> · no shared rate limit — check GEOCODER_UNTHROTTLED</strong>
+                )
+              ) : null}
+            </li>
+          ) : null}
           {keys ? <li>Token encryption: {keys.description}</li> : null}
         </ul>
 

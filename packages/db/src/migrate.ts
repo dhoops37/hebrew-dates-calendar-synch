@@ -144,6 +144,7 @@ export const EXPECTED_TABLES = [
   'google_accounts',
   'google_calendar_connections',
   'oauth_states',
+  'outbound_throttle',
   'owner_members',
   'owners',
   'rate_limits',

@@ -38,6 +38,7 @@ export function LocationPanel({
   catalogue,
   current,
   liveSearchEnabled,
+  attribution,
 }: {
   searchAction: PlaceSearchAction;
   confirmAction: Action;
@@ -46,6 +47,14 @@ export function LocationPanel({
   catalogue: PlaceOption[];
   current: { displayName: string; timezoneId: string; source: string } | undefined;
   liveSearchEnabled: boolean;
+  /**
+   * Credit for the search data, when live search is on.
+   *
+   * Required by the data licence rather than optional courtesy, so it is
+   * rendered whenever the search box can reach the provider — not only once
+   * results happen to be on screen.
+   */
+  attribution: { text: string; url: string; licence: string } | undefined;
 }) {
   const [search, runSearch, searching] = useActionState<PlaceSearchResult | undefined, FormData>(
     searchAction,
@@ -130,6 +139,17 @@ export function LocationPanel({
           <p className="muted small">
             Live search is not configured on this deployment, so only the built-in city list
             is searchable.
+          </p>
+        ) : null}
+        {liveSearchEnabled && attribution ? (
+          // ODbL requires the credit wherever the data is used. Rendered with
+          // the search control rather than with the results, so it is present
+          // whenever the data can be reached.
+          <p className="muted small">
+            <a href={attribution.url} target="_blank" rel="noreferrer noopener">
+              {attribution.text}
+            </a>{' '}
+            · {attribution.licence}
           </p>
         ) : null}
       </form>

@@ -110,3 +110,44 @@ export class QueryTooShortError extends GeocodingError {
 
 /** Shortest query worth sending upstream. */
 export const MIN_QUERY_LENGTH = 3;
+
+/**
+ * An application-wide gate on outbound requests.
+ *
+ * Injected rather than implemented here, for two reasons. This package has no
+ * database dependency and should not acquire one — it is pure apart from
+ * `fetch`. And the gate has to be shared by every process, which means it lives
+ * wherever the shared state lives; `packages/db` provides the Postgres
+ * implementation, and tests provide a counting stub.
+ *
+ * Without one, a provider can only space its own requests, which limits one
+ * instance. OpenStreetMap's policy limits the *application*, so on a platform
+ * that runs many instances a per-process throttle is not compliance.
+ */
+export interface OutboundGate {
+  /**
+   * Reserve the next send slot.
+   *
+   * Returns how long to wait before sending. `granted: false` means the queue
+   * was deeper than this caller is willing to wait for; it must not send, and
+   * the caller should fall back rather than fail.
+   */
+  reserve(): Promise<{ granted: boolean; waitMs: number }>;
+}
+
+/**
+ * Attribution required by the data source's licence.
+ *
+ * Carried as data rather than hard-coded in a component, so swapping the
+ * provider swaps the credit with it. A UI that renders search results must show
+ * this; ODbL requires it, and it is also simply the correct thing to do when
+ * the data is a volunteer project's.
+ */
+export interface GeocoderAttribution {
+  /** e.g. "Search by OpenStreetMap / Nominatim". */
+  text: string;
+  /** Where the credit should link. */
+  url: string;
+  /** The data licence, for a title attribute or a footnote. */
+  licence: string;
+}

@@ -8,12 +8,16 @@
  *
  *  - **A real User-Agent identifying the application.** Required. A generic or
  *    absent one is the documented reason for a block.
- *  - **At most one request per second.** Enforced here by a queue rather than
- *    left to the caller, because "the caller will be careful" is not a rate
- *    limit. Note this is per instance; the per-user limit in the service layer
- *    is what bounds the total.
+ *  - **At most one request per second, from the application as a whole.** The
+ *    in-process queue below spaces this instance's requests, but that is not
+ *    the policy: the policy bounds the application, and a serverless platform
+ *    runs many instances. So when an `OutboundGate` is supplied it is
+ *    authoritative — every instance takes its turn from one shared reservation,
+ *    and the local spacing is only the fallback for a single-process
+ *    deployment or a test.
  *  - **Results cached**, so a user refining a search does not re-ask for the
- *    same string.
+ *    same string. Both `search` and `lookup` are cached: confirming a place
+ *    re-resolves it by id, and that is a request worth not repeating.
  *
  * If this ever needs to move to a paid provider — better relevance ranking,
  * a commercial support agreement — the `GeocodingProvider` interface is the
@@ -28,7 +32,9 @@ import {
   MIN_QUERY_LENGTH,
   QueryTooShortError,
   type GeocodeQuery,
+  type GeocoderAttribution,
   type GeocodingProvider,
+  type OutboundGate,
   type PlaceCandidate,
 } from './types';
 import { timezoneForCoordinates } from './timezone';
@@ -42,6 +48,18 @@ const MIN_REQUEST_INTERVAL_MS = 1100;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
 const PROVIDER = 'nominatim';
+
+/**
+ * Required by ODbL, which is the licence on OpenStreetMap data.
+ *
+ * Exported so the UI renders the same words wherever results appear rather than
+ * each page inventing its own credit.
+ */
+export const NOMINATIM_ATTRIBUTION: GeocoderAttribution = {
+  text: 'Location search by OpenStreetMap',
+  url: 'https://www.openstreetmap.org/copyright',
+  licence: 'Open Database Licence (ODbL)',
+};
 
 /**
  * Place kinds worth offering.
@@ -95,6 +113,14 @@ export interface NominatimOptions {
   now?: () => number;
   /** Per-request timeout. A slow geocoder must not hold a page open. */
   timeoutMs?: number;
+  /**
+   * The application-wide one-per-second gate.
+   *
+   * Strongly recommended, and required for policy compliance on any platform
+   * that runs more than one process. Without it this provider can only space
+   * its *own* requests, and OpenStreetMap's limit is on the application.
+   */
+  gate?: OutboundGate;
 }
 
 export class NominatimProvider implements GeocodingProvider {
@@ -105,6 +131,7 @@ export class NominatimProvider implements GeocodingProvider {
   readonly #sleep: (milliseconds: number) => Promise<void>;
   readonly #now: () => number;
   readonly #timeoutMs: number;
+  readonly #gate: OutboundGate | undefined;
 
   /**
    * When the last request left, for spacing the next one.
@@ -117,6 +144,15 @@ export class NominatimProvider implements GeocodingProvider {
   /** Serialises requests so the one-per-second rule holds under concurrency. */
   #queue: Promise<unknown> = Promise.resolve();
   readonly #cache = new Map<string, { at: number; candidates: PlaceCandidate[] }>();
+  /**
+   * Cached `lookup` results, keyed by OSM id.
+   *
+   * Separate from the search cache because the key space is different and a
+   * confirmed place is worth remembering for longer than a search string —
+   * confirming the same place twice is a common sequence (a user going back a
+   * step), and it is a request the policy counts.
+   */
+  readonly #lookupCache = new Map<string, { at: number; candidate: PlaceCandidate | undefined }>();
 
   constructor(options: NominatimOptions) {
     if (!options.userAgent || options.userAgent.length < 8) {
@@ -135,6 +171,17 @@ export class NominatimProvider implements GeocodingProvider {
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.#now = options.now ?? Date.now;
     this.#timeoutMs = options.timeoutMs ?? 8000;
+    this.#gate = options.gate;
+  }
+
+  /** The credit this provider's data requires. Render it beside results. */
+  get attribution(): GeocoderAttribution {
+    return NOMINATIM_ATTRIBUTION;
+  }
+
+  /** Whether an application-wide gate is in force. For diagnostics. */
+  get globallyThrottled(): boolean {
+    return this.#gate !== undefined;
   }
 
   async search(query: GeocodeQuery): Promise<PlaceCandidate[]> {
@@ -184,6 +231,9 @@ export class NominatimProvider implements GeocodingProvider {
     const osmId = id.startsWith(`${PROVIDER}:`) ? id.slice(PROVIDER.length + 1) : id;
     if (!/^[NWR]\d+$/.test(osmId)) return undefined;
 
+    const cached = this.#lookupCache.get(osmId);
+    if (cached && this.#now() - cached.at < CACHE_TTL_MS) return cached.candidate;
+
     const url = new URL(`${this.#endpoint}/lookup`);
     url.searchParams.set('osm_ids', osmId);
     url.searchParams.set('format', 'jsonv2');
@@ -191,12 +241,16 @@ export class NominatimProvider implements GeocodingProvider {
 
     const places = await this.#request<NominatimPlace[]>(url);
     const first = places[0];
-    return first ? this.#toCandidate(first) : undefined;
+    const candidate = first ? this.#toCandidate(first) : undefined;
+    // Cached even when undefined: an id that does not resolve will not start
+    // resolving, and re-asking is a request the policy counts.
+    this.#lookupCache.set(osmId, { at: this.#now(), candidate });
+    return candidate;
   }
 
-  /** Cached search strings, for a diagnostics panel. */
+  /** Cached search strings and lookups, for a diagnostics panel. */
   get cacheSize(): number {
-    return this.#cache.size;
+    return this.#cache.size + this.#lookupCache.size;
   }
 
   /* ---------------------------------------------------------------- internal -- */
@@ -204,14 +258,42 @@ export class NominatimProvider implements GeocodingProvider {
   /**
    * One request, throttled and serialised.
    *
-   * The queue is the mechanism: each call chains onto the last, so however many
-   * callers arrive at once, requests leave one at a time and at most one per
-   * `MIN_REQUEST_INTERVAL_MS`.
+   * Two layers, and which one binds matters:
+   *
+   *  - The in-process queue chains each call onto the last, so however many
+   *    callers arrive at once within *this* instance, requests leave one at a
+   *    time. This is ordering, not compliance.
+   *  - The `OutboundGate`, when supplied, is the compliance boundary: every
+   *    instance takes its turn from one shared reservation, so the application
+   *    as a whole stays under one request per second no matter how many
+   *    processes the platform is running.
+   *
+   * When a gate is present the local interval is skipped, because the gate has
+   * already decided when this request may leave and applying both would double
+   * every wait.
    */
   async #request<T>(url: URL): Promise<T> {
     const run = this.#queue.then(async () => {
-      const waitFor = this.#lastRequestAt + MIN_REQUEST_INTERVAL_MS - this.#now();
-      if (waitFor > 0) await this.#sleep(waitFor);
+      if (this.#gate) {
+        const slot = await this.#gate.reserve();
+        if (!slot.granted) {
+          // The shared queue is deeper than we are willing to wait for. Failing
+          // here is what makes the composite fall back to the built-in city
+          // list, which is a far better outcome than a user watching a spinner
+          // for however long the backlog is.
+          throw new GeocodingUnavailableError(
+            PROVIDER,
+            new Error(
+              `the application-wide one-per-second budget is backed up by ` +
+                `${slot.waitMs}ms; not queueing behind it`,
+            ),
+          );
+        }
+        if (slot.waitMs > 0) await this.#sleep(slot.waitMs);
+      } else {
+        const waitFor = this.#lastRequestAt + MIN_REQUEST_INTERVAL_MS - this.#now();
+        if (waitFor > 0) await this.#sleep(waitFor);
+      }
       this.#lastRequestAt = this.#now();
 
       const controller = new AbortController();

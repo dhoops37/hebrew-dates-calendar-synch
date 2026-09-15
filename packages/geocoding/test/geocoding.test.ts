@@ -346,6 +346,121 @@ describe('NominatimProvider', () => {
     for (const wait of timing.waits) expect(wait).toBeGreaterThan(1000);
   });
 
+  it('defers to a shared gate instead of its own interval', async () => {
+    // The in-process interval limits one instance. The policy limits the
+    // application, so when a shared gate is supplied it is the one that decides
+    // — and the local interval must not apply on top, or every wait doubles.
+    const fake = fakeNominatim();
+    const waits: number[] = [];
+    let reserved = 0;
+    const provider = new NominatimProvider({
+      userAgent: USER_AGENT,
+      fetch: fake.fetch,
+      sleep: async (ms) => void waits.push(ms),
+      now: () => 0,
+      gate: {
+        async reserve() {
+          // A gate handing out slots 1s apart, as the Postgres one does.
+          const waitMs = reserved * 1000;
+          reserved += 1;
+          return { granted: true, waitMs };
+        },
+      },
+    });
+
+    await Promise.all([
+      provider.search({ query: 'Lakewood' }),
+      provider.search({ query: 'Jerusalem' }),
+      provider.search({ query: 'Brooklyn' }),
+    ]);
+
+    expect(reserved).toBe(3);
+    expect(fake.requests).toHaveLength(3);
+    // The gate's own spacing, not the gate's plus the local 1100ms. The first
+    // slot is zero, so it does not sleep at all.
+    expect(waits).toEqual([1000, 2000]);
+  });
+
+  it('falls back rather than queueing when the shared gate is backed up', async () => {
+    // A refused slot has to become an unavailability, because that is what
+    // makes the composite degrade to the built-in cities. Queueing behind a
+    // long backlog would leave a user watching a spinner instead.
+    const fake = fakeNominatim();
+    const provider = new NominatimProvider({
+      userAgent: USER_AGENT,
+      fetch: fake.fetch,
+      sleep: async () => {},
+      gate: {
+        async reserve() {
+          return { granted: false, waitMs: 42_000 };
+        },
+      },
+    });
+
+    await expect(provider.search({ query: 'Lakewood' })).rejects.toThrow(
+      GeocodingUnavailableError,
+    );
+    // And crucially: it did not send the request anyway.
+    expect(fake.requests).toHaveLength(0);
+  });
+
+  it('does not consult the gate for a cached search', async () => {
+    // A cache that still pays the rate-limit cost is not much of a cache, and
+    // the policy counts requests rather than cache misses.
+    const fake = fakeNominatim();
+    let reserved = 0;
+    let clock = 0;
+    const provider = new NominatimProvider({
+      userAgent: USER_AGENT,
+      fetch: fake.fetch,
+      sleep: async () => {},
+      now: () => clock,
+      gate: {
+        async reserve() {
+          reserved += 1;
+          return { granted: true, waitMs: 0 };
+        },
+      },
+    });
+
+    await provider.search({ query: 'Lakewood' });
+    await provider.search({ query: 'Lakewood' });
+
+    expect(reserved).toBe(1);
+    expect(fake.requests).toHaveLength(1);
+  });
+
+  it('caches a repeated lookup, which is what confirming a place does', async () => {
+    const fake = fakeNominatim({ places: [LAKEWOOD] });
+    let clock = 0;
+    const provider = new NominatimProvider({
+      userAgent: USER_AGENT,
+      fetch: fake.fetch,
+      sleep: async () => {},
+      now: () => clock,
+    });
+
+    // 'relation' + 172917, which is how the provider encodes an OSM id.
+    const id = 'nominatim:R172917';
+    const first = await provider.lookup(id);
+    const second = await provider.lookup(id);
+
+    expect(first?.displayName).toBe(second?.displayName);
+    expect(fake.requests).toHaveLength(1);
+
+    // And it expires, so a place that was renamed is not cached forever.
+    clock += 11 * 60 * 1000;
+    await provider.lookup(id);
+    expect(fake.requests).toHaveLength(2);
+  });
+
+  it('publishes the attribution its licence requires', () => {
+    const provider = new NominatimProvider({ userAgent: USER_AGENT });
+    expect(provider.attribution.text).toMatch(/OpenStreetMap/);
+    expect(provider.attribution.url).toBe('https://www.openstreetmap.org/copyright');
+    expect(provider.attribution.licence).toMatch(/ODbL/);
+  });
+
   it('caches a repeated search rather than re-asking', async () => {
     const fake = fakeNominatim();
     let clock = 0;

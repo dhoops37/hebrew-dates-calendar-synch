@@ -511,3 +511,96 @@ the year of death.
   engine and the `ical` package already render several of these, and the schema
   is designed for family datasets. None of it is exposed, on purpose: the
   individual Google Calendar flow has to be real first.
+
+## 7. Pre-deployment review — built
+
+Three checks before the first private deployment, none of them a feature.
+
+### Dependencies: everything critical and high, fixed
+
+All eleven advisories traced to two roots. `next` 15.5.22 carried both
+criticals — an unauthenticated RCE on Windows hosts, and one in the Image
+Optimization API via AVIF — fixed by the patch bump to 15.5.24+.
+
+The rest were transitive under `next`, and this is the part worth recording:
+**bumping `next` does not fix them.** Next pins `postcss: 8.4.31` exactly, and
+still does at 15.5.25, so the four postcss advisories and the `nanoid` one
+underneath them survive any version of Next. They need a `pnpm.overrides`
+entry. postcss 8.5.28 also depends on `nanoid ^3.3.18`, so that one is fixed
+transitively rather than needing its own override.
+
+`sharp` likewise: overridden to 0.35.4, which is not a guess — next declares
+`^0.34.3 || ^0.35.4` as its optional range, so the fixed version is one it
+already supports.
+
+`vitest` 3.2.7 was the only advisory needing a major bump, with no fix in the
+3.x line. It was taken anyway, because the risk was *measured* rather than
+assumed: the codebase contains zero uses of `vi.*`, so `@vitest/mocker` — the
+vulnerable component — is not exercised by a single test, and 4.1.11 ran all
+959 tests green with no source changes.
+
+`pnpm audit` now reports nothing. Two notes for later:
+
+- Overrides are a standing commitment. Each one has to be revisited when `next`
+  finally moves its own pin, or they will silently hold a dependency *back*.
+- Nothing here was reachable in an interesting way, which is worth being honest
+  about rather than claiming a narrow escape. The app has no `next/image` usage
+  at all, so the AVIF path and sharp were dead code in this deployment; postcss
+  runs at build time on our own CSS; vitest never ships. They were fixed because
+  a clean audit is worth having, not because a beta was in danger.
+
+### Nominatim: the throttle was not compliant, and now is
+
+The policy limits the *application* to one request per second. The
+implementation limited one **process**, which on Vercel means the limit was
+multiplied by however many instances happened to be warm. That is not a
+throttle; it is a throttle-shaped object.
+
+The fix is `outbound_throttle`, a one-row-per-upstream table holding the
+earliest instant the next request may leave. A caller takes that instant as its
+slot under `SELECT … FOR UPDATE` and pushes the marker one interval on, so
+concurrent instances get slots spaced 1100 ms apart instead of all firing at
+once. Verified against a real server: eight simultaneous callers on eight
+separate pools received six distinct slots exactly 1100 ms apart, with the last
+two refused by the six-second budget, in 24 ms of wall time.
+
+Two design points that took some thought:
+
+- **Reservation, not refusal.** `rate_limits` answers "have you had too many?"
+  and turns callers away. That is wrong here: a user searching for their town
+  should not fail because somebody else on another instance searched 200 ms
+  ago. So a caller waits its turn — unless the queue is deeper than six
+  seconds, in which case it stands down and the search degrades to the built-in
+  city list. Watching a spinner for forty seconds is worse than getting 22
+  cities.
+- **A refused caller must not advance the marker.** Otherwise a burst of
+  refusals drives the backlog up without a single request being sent, and the
+  queue never recovers. There is a test for exactly that.
+
+This is also the one place the transaction-pooler question actually bites, and
+it is fine: the lock is held across two statements *within one transaction*,
+which a transaction pooler keeps on one connection. The rule it must not break
+is holding a lock across transactions, which is the migration runner's case,
+not this one.
+
+Also fixed while here: `lookup` was uncached, so confirming a place always hit
+the network — and confirming is the step a user is most likely to repeat by
+going back. And ODbL attribution was missing from the UI entirely, which is a
+licence requirement rather than a courtesy. It is carried as data on the
+provider so that replacing the vendor replaces the credit, and rendered with
+the search control rather than with the results, so it is present whenever the
+data can be reached rather than only when results happen to be on screen.
+
+### Cron: daily, because Hobby
+
+The 15-minute schedule would have been rejected outright by Vercel Hobby, so
+the deployed schedule is `0 3 * * *`. Nothing the private beta needs is lost:
+adding a date still writes the first two Hebrew years synchronously, so events
+appear immediately, and **Sync now** runs the same work on demand. What waits
+up to a day is the remaining eighteen years and any retry after a transient
+Google failure.
+
+Switching back on Pro is one line in `vercel.json` and a redeploy. The design
+already assumes the frequent case — `maxDuration` of 60s, a runner with its own
+smaller budget that requeues what it cannot finish, and idempotent jobs claimed
+under `FOR UPDATE SKIP LOCKED` so overlapping invocations take different work.

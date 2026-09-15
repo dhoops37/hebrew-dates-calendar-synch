@@ -25,7 +25,7 @@ four.
 
 ```bash
 pnpm install
-pnpm test        # 943 tests; database suites skip without TEST_DATABASE_URL
+pnpm test        # 959 tests; database suites skip without TEST_DATABASE_URL
 pnpm dev         # http://localhost:3000
 ```
 
@@ -175,7 +175,7 @@ cannot tell a refresh token from an identifier.
 pnpm test                                     # skips the database suites
 
 export TEST_DATABASE_URL='postgres://user@localhost:5432/postgres'
-pnpm test                                     # all 943
+pnpm test                                     # all 959
 ```
 
 The integration suites run against a real PostgreSQL 16 — each file creates and

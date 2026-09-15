@@ -16,5 +16,11 @@
     "db:migrate": "pnpm --filter @hebrew-dates/db db:migrate",
     "db:status": "pnpm --filter @hebrew-dates/db db:status",
     "test:db": "pnpm --filter @hebrew-dates/db test"
+  },
+  "pnpm": {
+    "overrides": {
+      "postcss": "^8.5.28",
+      "sharp": "^0.35.4"
+    }
   }
 }

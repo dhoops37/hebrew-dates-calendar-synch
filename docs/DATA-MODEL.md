@@ -264,6 +264,7 @@ sync_jobs                 (dataset_id, destination_calendar_id?, job_type, statu
                            error_summary)
 audit_log                 (ADDED: actor, action, subject_type, subject_id, at, details)
 rate_limits               (ADDED: bucket pk, window_start, attempts, updated_at)
+outbound_throttle         (ADDED: throttle_key pk, next_available_at, updated_at)
 ```
 
 `audit_log` exists because PRD 30 requires logging administrative access to
@@ -280,6 +281,17 @@ name or a token written here outlives the record it came from. See decision 6.
 Postgres rather than in process memory because Vercel runs many instances, and a
 per-instance counter is not a limit. Rows whose window closed more than 24 hours
 ago are deleted by `purgeExpired` on the cron tick.
+
+`outbound_throttle` looks similar and does the opposite job. `rate_limits` bounds
+what *callers* ask of us and refuses them past a threshold. This bounds what *we*
+send to somebody else — currently OpenStreetMap's Nominatim, whose policy limits
+the application to one request per second — and it makes callers **wait their
+turn** rather than refusing them, because a user searching for their town should
+not fail merely because a different user on a different instance searched 200ms
+ago. The single row per upstream holds the earliest instant the next request may
+leave; a caller takes that instant under `SELECT … FOR UPDATE` and pushes the
+marker one interval on. It has one row per upstream rather than one per caller,
+so unlike `rate_limits` it never grows and needs no purge.
 
 ## 3. Divergences from PRD 24, with reasons
 
@@ -309,8 +321,9 @@ file only where reversal is safe.
 | `0001_init.sql` | `users`, `owners`, `owner_members`, `datasets`, `destination_calendars`, `calendar_locations`, `source_records`, `generated_occurrences`, `destination_events`, `reminder_rules`, `sync_jobs`, all constraints and indexes. **Applies cleanly against PostgreSQL 16; `db/tests/constraints.sql` verifies all 17 product rules it encodes.** | 2 |
 | `0002_auth_and_google.sql` | `google_accounts`, `sessions`, `oauth_states`, `google_calendar_connections`, `audit_log` | 2 |
 | `0003_rate_limits_and_geocoding.sql` | `rate_limits`; `calendar_locations.geocoder` and `.geocoder_display_name`; **replaces** `gregorian_entry_needs_sunset_status` with `unresolved_sunset_entry_cannot_be_active` | 3 |
-| `0004_feeds.sql` | `calendar_feeds` | 4 |
-| `0005_famous.sql` | `famous_people`, `famous_person_sources`, `famous_subscriptions` | 5 |
+| `0004_outbound_throttle.sql` | `outbound_throttle` | 3 |
+| `0005_feeds.sql` | `calendar_feeds` | 4 |
+| `0006_famous.sql` | `famous_people`, `famous_person_sources`, `famous_subscriptions` | 5 |
 
 `0003` is the only migration so far that changes a rule rather than adding
 storage, and it is worth reading in full. The old constraint required a
