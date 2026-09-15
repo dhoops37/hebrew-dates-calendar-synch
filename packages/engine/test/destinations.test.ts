@@ -15,7 +15,11 @@ import {
   type SourceRecordContent,
 } from '../src/destinations';
 import { generateOccurrences } from '../src/generate';
-import { getSeedLocation } from '../src/locations';
+import {
+  confirmLocation,
+  getSeedLocation,
+  suggestLocationForTimezone,
+} from '../src/locations';
 import { civilToAbsolute } from '../src/hebrewCalendar';
 import type { CalculationLocation } from '../src/types';
 
@@ -181,17 +185,17 @@ describe('one dataset rendered for a family in three cities', () => {
 describe('per-destination settings', () => {
   const [occurrence] = sharedOccurrences(1) as [HebrewOccurrence];
 
-  it('defaults events to private visibility', () => {
+  it('defaults events to Google visibility "default", so calendar sharing governs', () => {
     const event = renderForDestination(occurrence, record, family[0]!);
-    expect(event.visibility).toBe('private');
+    expect(event.visibility).toBe('default');
   });
 
-  it('lets a destination opt into the calendar default', () => {
+  it('lets a destination opt into per-event private visibility', () => {
     const event = renderForDestination(occurrence, record, {
       ...family[0]!,
-      visibility: 'calendar_default',
+      visibility: 'private',
     });
-    expect(event.visibility).toBe('calendar_default');
+    expect(event.visibility).toBe('private');
     // Visibility reaches the destination, so it must move the hash.
     expect(event.contentHash).not.toBe(
       renderForDestination(occurrence, record, family[0]!).contentHash,
@@ -245,6 +249,149 @@ describe('per-destination settings', () => {
       const event = renderForDestination(flagged, record, destination);
       expect(event.warnings.some((w) => w.code === 'AMBIGUOUS_HEBREW_DATE')).toBe(true);
     }
+  });
+});
+
+describe('calculation location is separate from calendar time zone', () => {
+  const [occurrence] = sharedOccurrences(1) as [HebrewOccurrence];
+  const confirmedJerusalem = confirmLocation(jerusalem);
+
+  it('calculates sunset from the location, not from the calendar time zone', () => {
+    // Same location, wildly different calendar zones. The instants must not move.
+    const base = renderForDestination(occurrence, record, {
+      id: 'd',
+      destinationType: 'google',
+      location: confirmedJerusalem,
+      displayMode: 'exact_sunset',
+    });
+    for (const hint of ['America/Los_Angeles', 'Pacific/Kiritimati', 'UTC']) {
+      const withHint = renderForDestination(occurrence, record, {
+        id: 'd',
+        destinationType: 'google',
+        location: confirmedJerusalem,
+        displayMode: 'exact_sunset',
+        calendarTimezoneHint: hint,
+      });
+      expect(withHint.timing!.startEpochMs, hint).toBe(base.timing!.startEpochMs);
+      expect(withHint.timing!.endEpochMs, hint).toBe(base.timing!.endEpochMs);
+      // The ISO strings still carry the LOCATION's offset, not the hint's.
+      expect(withHint.timing!.startIso).toBe(base.timing!.startIso);
+    }
+  });
+
+  it('changing the location changes the times; changing the hint does not', () => {
+    const inJerusalem = renderForDestination(occurrence, record, {
+      id: 'd',
+      destinationType: 'google',
+      location: confirmedJerusalem,
+      displayMode: 'exact_sunset',
+      calendarTimezoneHint: 'Asia/Jerusalem',
+    });
+    const inMelbourne = renderForDestination(occurrence, record, {
+      id: 'd',
+      destinationType: 'google',
+      location: confirmLocation(melbourne),
+      // Deliberately the WRONG hint for Melbourne, to prove it is not an input.
+      displayMode: 'exact_sunset',
+      calendarTimezoneHint: 'Asia/Jerusalem',
+    });
+    expect(inMelbourne.timing!.startEpochMs).not.toBe(inJerusalem.timing!.startEpochMs);
+    // Sunset was computed from Melbourne's coordinates: the offset proves it.
+    expect(inMelbourne.timing!.startIso).toMatch(/\+1[01]:00$/);
+  });
+
+  it('uses the calendar zone only to say how the client should display it', () => {
+    const event = renderForDestination(occurrence, record, {
+      id: 'd',
+      destinationType: 'google',
+      location: confirmedJerusalem,
+      displayMode: 'exact_sunset',
+      calendarTimezoneHint: 'America/New_York',
+    });
+    expect(event.displayTimezoneId).toBe('America/New_York');
+    expect(event.locationSnapshot.timezoneId).toBe('Asia/Jerusalem');
+  });
+
+  it('falls back to the location zone for display when no hint is known', () => {
+    const event = renderForDestination(occurrence, record, {
+      id: 'd',
+      destinationType: 'google',
+      location: confirmedJerusalem,
+      displayMode: 'exact_sunset',
+    });
+    expect(event.displayTimezoneId).toBe('Asia/Jerusalem');
+  });
+
+  it('records the display zone in the content hash, since it reaches the event', () => {
+    const a = renderForDestination(occurrence, record, {
+      id: 'd',
+      destinationType: 'google',
+      location: confirmedJerusalem,
+      displayMode: 'exact_sunset',
+      calendarTimezoneHint: 'Asia/Jerusalem',
+    });
+    const b = renderForDestination(occurrence, record, {
+      id: 'd',
+      destinationType: 'google',
+      location: confirmedJerusalem,
+      displayMode: 'exact_sunset',
+      calendarTimezoneHint: 'America/New_York',
+    });
+    expect(b.contentHash).not.toBe(a.contentHash);
+    // ...but the calculated instants are identical, which is the whole point.
+    expect(b.timing!.startEpochMs).toBe(a.timing!.startEpochMs);
+  });
+
+  it('keeps the location snapshot pointing at coordinates, not just a zone', () => {
+    const event = renderForDestination(occurrence, record, {
+      id: 'd',
+      destinationType: 'google',
+      location: confirmedJerusalem,
+      displayMode: 'exact_sunset',
+    });
+    expect(event.locationSnapshot.latitude).toBeCloseTo(31.7683, 3);
+    expect(event.locationSnapshot.longitude).toBeCloseTo(35.2137, 3);
+    expect(event.locationSnapshot.useElevation).toBe(true);
+  });
+});
+
+describe('an unconfirmed location must not silently become a calculation', () => {
+  const [occurrence] = sharedOccurrences(1) as [HebrewOccurrence];
+
+  it('warns when the location has not been confirmed by the user', () => {
+    const event = renderForDestination(occurrence, record, {
+      id: 'd',
+      destinationType: 'google',
+      // A seed catalogue entry is a candidate, not a confirmed choice.
+      location: jerusalem,
+      displayMode: 'exact_sunset',
+    });
+    const warning = event.warnings.find((w) => w.code === 'LOCATION_NOT_CONFIRMED');
+    expect(warning).toBeDefined();
+    expect(warning!.message).toContain('Jerusalem');
+    expect(warning!.message).toMatch(/time zone covers a lot of ground|half an hour/);
+  });
+
+  it('is silent once the user has confirmed', () => {
+    const event = renderForDestination(occurrence, record, {
+      id: 'd',
+      destinationType: 'google',
+      location: confirmLocation(jerusalem),
+      displayMode: 'exact_sunset',
+    });
+    expect(event.warnings.some((w) => w.code === 'LOCATION_NOT_CONFIRMED')).toBe(false);
+  });
+
+  it('still renders a preview, because that is what the user is confirming', () => {
+    const event = renderForDestination(occurrence, record, {
+      id: 'd',
+      destinationType: 'google',
+      location: suggestLocationForTimezone('Asia/Jerusalem')!.location,
+      displayMode: 'exact_sunset',
+    });
+    expect(event.timing).not.toBeNull();
+    expect(event.title).toContain('Zayde');
+    expect(event.warnings.some((w) => w.code === 'LOCATION_NOT_CONFIRMED')).toBe(true);
   });
 });
 

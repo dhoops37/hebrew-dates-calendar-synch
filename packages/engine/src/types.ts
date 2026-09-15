@@ -100,10 +100,43 @@ export type DisplayMode = 'exact_sunset' | 'two_day_all_day';
 /** Whether a Gregorian-entered event happened before or after that day's sunset. */
 export type SunsetStatus = 'before_sunset' | 'after_sunset' | 'unknown';
 
+/** How a calculation location came to be what it is. */
+export type LocationSource =
+  /** The user picked or searched for this place explicitly. */
+  | 'user_selected'
+  /** Derived from a geocoder result the user accepted. */
+  | 'geocoded'
+  /** Suggested from the device's IANA zone. Requires confirmation. */
+  | 'timezone_suggestion'
+  /**
+   * Suggested from the destination calendar's own Google time zone. A *hint*
+   * only: a time zone is not a place. Requires confirmation.
+   */
+  | 'calendar_timezone_hint';
+
 /**
- * A saved calculation location. Latitude/longitude alone are not enough:
- * rendering a sunset instant as a wall-clock time requires the IANA zone,
- * and the zone cannot be derived reliably from coordinates at run time.
+ * A saved calculation location — the geography sunset is computed from.
+ *
+ * ## Location and calendar time zone are different things
+ *
+ * Sunset is a function of **latitude, longitude and date**. The IANA zone only
+ * says how to *render* the resulting instant as a wall-clock time. So the two
+ * are stored separately and never substituted for one another:
+ *
+ * - This record's `latitude` / `longitude` / `timezoneId` are the *only* inputs
+ *   to a sunset calculation.
+ * - A destination calendar's own time zone (`DestinationCalendar.calendarTimezoneHint`,
+ *   read from Google's `calendars.get`) may seed a *suggestion* and is used when
+ *   formatting an event for that calendar, but it can never stand in for a place.
+ *
+ * The reason is concrete: `America/New_York` spans roughly 20° of longitude, so
+ * sunset differs by more than half an hour across it, and several IANA zones
+ * span far more. Treating a zone as a location is a silent, systematic error.
+ *
+ * This is why `confirmedByUser` exists. A suggestion is rendered to the user
+ * with its resolved place name and must be confirmed during onboarding before
+ * events are written anywhere; the sync planner refuses to create events for a
+ * destination whose location is unconfirmed.
  */
 export interface CalculationLocation {
   /** Stable identifier from whichever location provider produced this record. */
@@ -112,21 +145,49 @@ export interface CalculationLocation {
   displayName: string;
   /** ISO 3166-1 alpha-2. */
   countryCode: string;
+  /** Geographic latitude. A sunset input. */
   latitude: number;
+  /** Geographic longitude. A sunset input. */
   longitude: number;
-  /** IANA time zone identifier, e.g. "Asia/Jerusalem". */
+  /**
+   * IANA time zone of *this place*, e.g. "Asia/Jerusalem". Used to render the
+   * calculated instant as a local wall-clock time. Not a substitute for the
+   * coordinates, and not necessarily the destination calendar's own zone.
+   */
   timezoneId: string;
   /** Metres above sea level. Recorded even when unused, so results are reproducible. */
   elevationMeters?: number;
   /**
-   * Whether elevation was applied to the sunset calculation. Defaults to false
-   * (sea-level sunset), which is what published Jewish calendars normally show.
-   * Elevation can move sunset by several minutes, so this is part of the
-   * calculation snapshot rather than a display preference.
+   * Whether elevation was applied to the sunset calculation. Set explicitly on
+   * every saved location rather than defaulted in code, because it moves the
+   * answer by minutes and must be reproducible from the stored row alone.
    */
   useElevation?: boolean;
   /** Provider place ID, when the location came from a geocoder. */
   geocoderPlaceId?: string;
+  /** How this location was arrived at. Defaults to `user_selected` when absent. */
+  source?: LocationSource;
+  /**
+   * Whether the user has explicitly confirmed this is where sunset should be
+   * calculated. A suggestion is never treated as confirmed: onboarding shows the
+   * resolved place name and asks. Unconfirmed locations block event creation.
+   */
+  confirmedByUser?: boolean;
+}
+
+/**
+ * A location the app is proposing, together with why, for the user to confirm
+ * or replace. Never used for a calculation until it has been confirmed.
+ */
+export interface LocationSuggestion {
+  location: CalculationLocation;
+  source: LocationSource;
+  /** The zone the suggestion was derived from, when it came from one. */
+  derivedFromTimezoneId?: string;
+  /** Shown next to the suggestion so the user knows what they are confirming. */
+  explanation: string;
+  /** Always true: a suggestion is a question, not an answer. */
+  requiresConfirmation: true;
 }
 
 /** Result of a sunset calculation for one civil day at one location. */

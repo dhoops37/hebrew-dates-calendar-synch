@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { classifyPolarDay, formatInZone, sunsetOn } from '../src/sunset';
 import {
   atSeaLevel,
+  confirmLocation,
   getSeedLocation,
   SEED_LOCATIONS,
   suggestLocationForTimezone,
@@ -194,20 +195,53 @@ describe('elevation', () => {
 
 describe('suggesting a location from a time zone (setup convenience)', () => {
   it('finds a catalogue city in the same zone', () => {
-    expect(suggestLocationForTimezone('Asia/Jerusalem')?.timezoneId).toBe('Asia/Jerusalem');
-    expect(suggestLocationForTimezone('America/New_York')?.timezoneId).toBe('America/New_York');
-    expect(suggestLocationForTimezone('Australia/Melbourne')?.id).toBe('seed:melbourne');
+    expect(suggestLocationForTimezone('Asia/Jerusalem')?.location.timezoneId).toBe(
+      'Asia/Jerusalem',
+    );
+    expect(suggestLocationForTimezone('America/New_York')?.location.timezoneId).toBe(
+      'America/New_York',
+    );
+    expect(suggestLocationForTimezone('Australia/Melbourne')?.location.id).toBe('seed:melbourne');
   });
 
   it('falls back to the same region rather than guessing wildly', () => {
     // An unlisted US zone should not land the user in Jerusalem.
     const suggestion = suggestLocationForTimezone('America/Detroit');
-    expect(suggestion?.timezoneId.startsWith('America/')).toBe(true);
+    expect(suggestion?.location.timezoneId.startsWith('America/')).toBe(true);
   });
 
   it('returns nothing rather than a wrong guess for an unknown region', () => {
     expect(suggestLocationForTimezone('Antarctica/Vostok')).toBeUndefined();
     expect(suggestLocationForTimezone(undefined)).toBeUndefined();
+  });
+
+  it('never returns a confirmed location: a suggestion is a question', () => {
+    const suggestion = suggestLocationForTimezone('Asia/Jerusalem');
+    expect(suggestion?.requiresConfirmation).toBe(true);
+    expect(suggestion?.location.confirmedByUser).toBe(false);
+    expect(suggestion?.location.source).toBe('timezone_suggestion');
+    expect(suggestion?.derivedFromTimezoneId).toBe('Asia/Jerusalem');
+  });
+
+  it('says where the suggestion came from, and that the zone is not the place', () => {
+    const fromDevice = suggestLocationForTimezone('Europe/London');
+    expect(fromDevice?.explanation).toMatch(/device's time zone/);
+    expect(fromDevice?.explanation).toMatch(/not from the time zone/);
+
+    const fromCalendar = suggestLocationForTimezone('Europe/London', 'calendar_timezone_hint');
+    expect(fromCalendar?.explanation).toMatch(/calendar's time zone/);
+    expect(fromCalendar?.location.source).toBe('calendar_timezone_hint');
+  });
+
+  it('confirmLocation is the only route from suggestion to usable location', () => {
+    const suggestion = suggestLocationForTimezone('Asia/Jerusalem')!;
+    const confirmed = confirmLocation(suggestion.location);
+    expect(confirmed.confirmedByUser).toBe(true);
+    expect(confirmed.source).toBe('user_selected');
+    // Geography is untouched by confirming — only provenance changes.
+    expect(confirmed.latitude).toBe(suggestion.location.latitude);
+    expect(confirmed.longitude).toBe(suggestion.location.longitude);
+    expect(confirmed.timezoneId).toBe(suggestion.location.timezoneId);
   });
 });
 

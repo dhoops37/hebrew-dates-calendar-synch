@@ -11,7 +11,11 @@
  * resolved once and only the times differ per member. See `destinations.ts`.
  */
 import { currentHebrewDateAt, resolveOccurrences } from './occurrences';
-import { renderForDestinationCalendar, type DestinationEvent } from './destinations';
+import {
+  renderForDestinationCalendar,
+  type DestinationEvent,
+  type EventVisibility,
+} from './destinations';
 import type {
   AnniversaryOrigin,
   CalculationConventions,
@@ -42,7 +46,10 @@ export interface GenerateOccurrencesInput {
   notes?: string;
   customTitle?: string;
   language?: 'en' | 'he';
-  visibility?: 'private' | 'calendar_default';
+  /** Defaults to 'default': calendar sharing decides who sees the details. */
+  visibility?: EventVisibility;
+  /** The destination calendar's own zone. A display and suggestion hint only. */
+  calendarTimezoneHint?: string;
   /** Per-year manual overrides, keyed by Hebrew year (PRD 17.1). */
   overrides?: Record<number, HebrewDate>;
   /** Destination identifier, which the external event ID derives from. */
@@ -98,6 +105,9 @@ export function generateOccurrences(
       displayMode: input.displayMode,
       ...(input.language ? { language: input.language } : {}),
       ...(input.visibility ? { visibility: input.visibility } : {}),
+      ...(input.calendarTimezoneHint
+        ? { calendarTimezoneHint: input.calendarTimezoneHint }
+        : {}),
     },
   );
 

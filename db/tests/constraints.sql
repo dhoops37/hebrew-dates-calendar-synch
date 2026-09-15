@@ -9,7 +9,7 @@
 -- These are product rules expressed as constraints, so a regression here is a
 -- regression in behaviour, not merely in schema style.
 --
--- Verified against PostgreSQL 16: all 17 steps behave as labelled.
+-- Verified against PostgreSQL 16: every step behaves as labelled.
 
 -- Does the schema actually enforce the product rules?
 \set ON_ERROR_STOP off
@@ -27,23 +27,58 @@ INSERT INTO owner_members (owner_id, user_id, role) VALUES
 INSERT INTO datasets (id, owner_id, name)
   VALUES ('44444444-4444-4444-4444-444444444444', '33333333-3333-3333-3333-333333333333', 'Family dates');
 
-INSERT INTO destination_calendars (id, dataset_id, user_id, name, destination_type) VALUES
+-- Note the calendar_timezone_hint: Aharon's Google calendar is set to UTC even
+-- though he lives in Jerusalem. That must not affect his sunset times.
+INSERT INTO destination_calendars
+  (id, dataset_id, user_id, name, destination_type, calendar_timezone_hint) VALUES
   ('55555555-5555-5555-5555-555555555555', '44444444-4444-4444-4444-444444444444',
-   '11111111-1111-1111-1111-111111111111', 'Aharon — Jerusalem', 'google'),
+   '11111111-1111-1111-1111-111111111111', 'Aharon — Jerusalem', 'google', 'UTC'),
   ('66666666-6666-6666-6666-666666666666', '44444444-4444-4444-4444-444444444444',
-   '22222222-2222-2222-2222-222222222222', 'Batya — Melbourne', 'ical_feed');
+   '22222222-2222-2222-2222-222222222222', 'Batya — Melbourne', 'ical_feed', 'Australia/Melbourne');
 
 INSERT INTO calendar_locations
-  (destination_calendar_id, display_name, country_code, latitude, longitude, elevation_meters, timezone_id)
+  (destination_calendar_id, display_name, country_code, latitude, longitude, elevation_meters,
+   timezone_id, source, confirmed_at, confirmed_by_user_id)
 VALUES
-  ('55555555-5555-5555-5555-555555555555', 'Jerusalem, Israel', 'IL', 31.7683, 35.2137, 754, 'Asia/Jerusalem'),
-  ('66666666-6666-6666-6666-666666666666', 'Melbourne, Australia', 'AU', -37.8136, 144.9631, 31, 'Australia/Melbourne');
+  ('55555555-5555-5555-5555-555555555555', 'Jerusalem, Israel', 'IL', 31.7683, 35.2137, 754,
+   'Asia/Jerusalem', 'user_selected', now(), '11111111-1111-1111-1111-111111111111'),
+  -- Batya's is a suggestion she has NOT confirmed yet.
+  ('66666666-6666-6666-6666-666666666666', 'Melbourne, Australia', 'AU', -37.8136, 144.9631, 31,
+   'Australia/Melbourne', 'calendar_timezone_hint', NULL, NULL);
 
 \echo '--- 1. elevation defaults to true (decision #8)'
 SELECT 'use_elevation=' || use_elevation FROM calendar_locations LIMIT 1;
 
-\echo '--- 2. events default to private (decision #12)'
+\echo '--- 2. events default to Google visibility "default" (calendar sharing governs)'
 SELECT 'visibility=' || event_visibility FROM destination_calendars LIMIT 1;
+
+\echo '--- 2b. REJECT: any visibility outside Google''s vocabulary'
+INSERT INTO destination_calendars (dataset_id, name, destination_type, event_visibility)
+  VALUES ('44444444-4444-4444-4444-444444444444', 'Bad', 'google', 'calendar_default');
+
+\echo '--- 2c. location and calendar time zone are separate columns and may differ'
+SELECT 'calendar hint=' || dc.calendar_timezone_hint || ' | location zone=' || cl.timezone_id
+       || ' | lat=' || cl.latitude
+  FROM destination_calendars dc
+  JOIN calendar_locations cl ON cl.destination_calendar_id = dc.id
+ WHERE dc.id = '55555555-5555-5555-5555-555555555555';
+
+\echo '--- 2d. which destinations are NOT cleared to receive events (unconfirmed location)'
+SELECT 'unconfirmed: ' || dc.name || ' (source=' || cl.source || ')'
+  FROM calendar_locations cl
+  JOIN destination_calendars dc ON dc.id = cl.destination_calendar_id
+ WHERE cl.confirmed_at IS NULL;
+
+\echo '--- 2e. REJECT: a confirmation with no confirmer recorded'
+UPDATE calendar_locations SET confirmed_at = now()
+ WHERE destination_calendar_id = '66666666-6666-6666-6666-666666666666';
+
+\echo '--- 2f. ACCEPT: confirming properly, with who confirmed it'
+UPDATE calendar_locations
+   SET confirmed_at = now(), confirmed_by_user_id = '22222222-2222-2222-2222-222222222222',
+       source = 'user_selected'
+ WHERE destination_calendar_id = '66666666-6666-6666-6666-666666666666';
+SELECT 'confirmed locations: ' || count(*) FROM calendar_locations WHERE confirmed_at IS NOT NULL;
 
 \echo '--- 3. pausing hides future events (decision #13)'
 SELECT 'pause=' || pause_behaviour FROM datasets LIMIT 1;

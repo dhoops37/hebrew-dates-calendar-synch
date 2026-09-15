@@ -13,6 +13,7 @@ import {
   interpretGregorianEntry,
   monthNumberForName,
   resolveAnniversary,
+  confirmLocation,
   searchSeedLocations,
   selectableMonths,
   suggestLocationForTimezone,
@@ -35,6 +36,18 @@ export interface PreviewRequest {
    * Stored per record in Phase 2; here it is per request.
    */
   adarConvention?: 'both' | 'adar_i' | 'adar_ii';
+  /**
+   * Whether the user has confirmed the calculation location. A suggested
+   * location previews fine but is never treated as settled — the sync planner
+   * refuses to write events for an unconfirmed one.
+   */
+  locationConfirmed?: boolean;
+  /**
+   * The destination calendar's own IANA zone. A display and suggestion hint
+   * only; never an input to sunset. In Phase 2 this comes from Google's
+   * `calendars.get`.
+   */
+  calendarTimezoneHint?: string;
   /** How the user described the date. */
   entryMode: 'hebrew' | 'gregorian';
   /** Hebrew entry. */
@@ -91,8 +104,11 @@ export function listLocations(query = ''): CalculationLocation[] {
  * name is shown and can be changed, because one time zone spans enough
  * longitude for sunset to differ by more than half an hour.
  */
-export function suggestLocation(timezoneId: string | undefined): CalculationLocation | undefined {
-  return suggestLocationForTimezone(timezoneId);
+export function suggestLocation(
+  timezoneId: string | undefined,
+  source: 'timezone_suggestion' | 'calendar_timezone_hint' = 'timezone_suggestion',
+) {
+  return suggestLocationForTimezone(timezoneId, source);
 }
 
 export function listMonths(hebrewYear?: number): HebrewMonthName[] {
@@ -100,10 +116,15 @@ export function listMonths(hebrewYear?: number): HebrewMonthName[] {
 }
 
 export function buildPreview(request: PreviewRequest): PreviewResponse {
-  const location = getSeedLocation(request.locationId);
-  if (!location) {
+  const catalogueEntry = getSeedLocation(request.locationId);
+  if (!catalogueEntry) {
     return { status: 'error', message: `Unknown location "${request.locationId}"` };
   }
+  // A catalogue entry is a candidate. It only becomes a settled calculation
+  // location once the user says so.
+  const location: CalculationLocation = request.locationConfirmed
+    ? confirmLocation(catalogueEntry)
+    : { ...catalogueEntry, source: 'timezone_suggestion', confirmedByUser: false };
 
   const displayName = request.displayName.trim() || 'Untitled';
   const count = clamp(request.count ?? 20, 1, MAX_COUNT);
@@ -163,6 +184,9 @@ export function buildPreview(request: PreviewRequest): PreviewResponse {
       ...(request.nowEpochMs ? { nowEpochMs: request.nowEpochMs } : {}),
       ...(request.adarConvention
         ? { conventions: { adarOrdinaryYahrzeitInLeapYear: request.adarConvention } }
+        : {}),
+      ...(request.calendarTimezoneHint
+        ? { calendarTimezoneHint: request.calendarTimezoneHint }
         : {}),
     });
 

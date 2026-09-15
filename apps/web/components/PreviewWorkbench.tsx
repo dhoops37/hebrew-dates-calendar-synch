@@ -88,6 +88,9 @@ export default function PreviewWorkbench({ locations, months }: Props) {
   const [response, setResponse] = useState<PreviewResponse | null>(null);
   const [pending, setPending] = useState(false);
   const [detectedZone, setDetectedZone] = useState<string | null>(null);
+  // A suggested location starts unconfirmed. Picking one from the list by hand
+  // is itself a confirmation; accepting the auto-detected one needs a click.
+  const [locationConfirmed, setLocationConfirmed] = useState(false);
 
   const request = useMemo<PreviewRequest>(
     () => ({
@@ -96,6 +99,7 @@ export default function PreviewWorkbench({ locations, months }: Props) {
       displayName,
       displayMode,
       adarConvention,
+      locationConfirmed,
       entryMode,
       hebrewMonth,
       hebrewDay,
@@ -110,6 +114,7 @@ export default function PreviewWorkbench({ locations, months }: Props) {
       displayName,
       displayMode,
       adarConvention,
+      locationConfirmed,
       entryMode,
       hebrewMonth,
       hebrewDay,
@@ -153,7 +158,7 @@ export default function PreviewWorkbench({ locations, months }: Props) {
   useEffect(() => {
     void runPreview(request);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayMode, adarConvention, locationId]);
+  }, [displayMode, adarConvention, locationId, locationConfirmed]);
 
   const selectedLocation = locations.find((location) => location.id === locationId);
 
@@ -172,7 +177,11 @@ export default function PreviewWorkbench({ locations, months }: Props) {
             <select
               id="location"
               value={locationId}
-              onChange={(event) => setLocationId(event.target.value)}
+              onChange={(event) => {
+                setLocationId(event.target.value);
+                // Choosing from the list is an explicit choice of place.
+                setLocationConfirmed(true);
+              }}
             >
               {locations.map((location) => (
                 <option key={location.id} value={location.id}>
@@ -193,10 +202,34 @@ export default function PreviewWorkbench({ locations, months }: Props) {
             ) : null}
             {detectedZone ? (
               <p className="hint">
-                Pre-selected from your device time zone ({detectedZone}). Change it if your
-                calculation location is elsewhere — sunset varies across a time zone.
+                Pre-selected from your device time zone ({detectedZone}). Sunset is calculated
+                from this place&rsquo;s coordinates, never from the time zone itself — one zone
+                can span more than half an hour of sunset difference.
               </p>
             ) : null}
+            {!locationConfirmed ? (
+              <div className="notice info" role="status" style={{ marginBlockStart: 12 }}>
+                <h3>Is this the right place?</h3>
+                <p>
+                  This location is a suggestion. Confirm it, or pick a different one above,
+                  before these dates go to a calendar.
+                </p>
+                <button type="button" onClick={() => setLocationConfirmed(true)}>
+                  Yes, calculate sunset here
+                </button>
+              </div>
+            ) : (
+              <p className="hint">
+                <strong>Location confirmed.</strong>{' '}
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setLocationConfirmed(false)}
+                >
+                  Change
+                </button>
+              </p>
+            )}
           </div>
         </section>
 

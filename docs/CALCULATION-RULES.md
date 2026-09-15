@@ -145,6 +145,15 @@ birthday (Adar II) is much less contested.
 - **Time zone.** Results are returned as RFC 3339 strings carrying the
   location's UTC offset, derived from the IANA database for the *historical*
   date in question. A 1978 New York sunset correctly reports `-04:00`.
+- **A time zone is never a location.** Sunset is computed from latitude,
+  longitude and date. The saved location's IANA zone only says how to render the
+  resulting instant; the *destination calendar's* own zone is a separate field
+  used to seed a suggestion and to tell the client how to display an event. It is
+  never a calculation input. `America/New_York` spans roughly 20° of longitude —
+  more than half an hour of sunset difference — so substituting one for the other
+  would be wrong in a way nobody would notice. A location suggested from a zone
+  must be confirmed by the user before any event is written; the sync planner
+  refuses unconfirmed ones.
 
 ### Exact Sunset Mode
 

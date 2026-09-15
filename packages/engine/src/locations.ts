@@ -11,7 +11,7 @@
  * zone cannot be derived from coordinates at run time and is required to render
  * a sunset instant as a wall-clock time.
  */
-import type { CalculationLocation } from './types';
+import type { CalculationLocation, LocationSource, LocationSuggestion } from './types';
 
 export interface LocationProvider {
   search(query: string, limit?: number): Promise<CalculationLocation[]>;
@@ -291,31 +291,64 @@ export function atSeaLevel(location: CalculationLocation): CalculationLocation {
 }
 
 /**
- * Best guess at a calculation location from an IANA time zone.
+ * Propose a calculation location from an IANA time zone.
  *
- * Used at setup to pre-select something sensible from the browser's zone (or,
- * later, from the destination calendar's zone) so that the common case needs no
- * searching. It is only ever a *suggestion*: the resolved place name is shown
- * and the user can change it, because a time zone covers a lot of ground and
- * sunset differs measurably across one.
+ * Used at setup to pre-fill something sensible — from the destination calendar's
+ * own zone once Google is connected, or from the browser's zone before that — so
+ * the common case needs no searching.
+ *
+ * It returns a **suggestion, not a location**, and deliberately so. A time zone
+ * is not a place: `America/New_York` spans about 20° of longitude, across which
+ * sunset differs by more than half an hour, and some zones span far more. The
+ * user confirms the resolved place name during onboarding before anything is
+ * calculated from it for real.
  *
  * Returns `undefined` rather than a wrong guess when nothing in the catalogue
- * shares the zone.
+ * shares the zone or even the region.
  */
 export function suggestLocationForTimezone(
   timezoneId: string | undefined,
-): CalculationLocation | undefined {
+  source: LocationSource = 'timezone_suggestion',
+): LocationSuggestion | undefined {
   if (!timezoneId) return undefined;
-  const exact = SEED_LOCATIONS.filter((location) => location.timezoneId === timezoneId);
-  if (exact.length > 0) return exact[0];
 
+  const exact = SEED_LOCATIONS.find((location) => location.timezoneId === timezoneId);
   // Fall back to the same region, e.g. an unknown "America/Detroit" lands on a
   // catalogue city in the Americas rather than on Jerusalem.
   const region = timezoneId.split('/')[0];
-  const sameRegion = SEED_LOCATIONS.filter(
+  const sameRegion = SEED_LOCATIONS.find(
     (location) => location.timezoneId.split('/')[0] === region,
   );
-  return sameRegion[0];
+  const match = exact ?? sameRegion;
+  if (!match) return undefined;
+
+  const origin =
+    source === 'calendar_timezone_hint'
+      ? "your calendar's time zone"
+      : "your device's time zone";
+  return {
+    location: { ...match, source, confirmedByUser: false },
+    source,
+    derivedFromTimezoneId: timezoneId,
+    explanation:
+      `Suggested from ${origin} (${timezoneId}). Sunset is calculated from the ` +
+      `coordinates of ${match.displayName}, not from the time zone, so please ` +
+      'confirm this is the right place — one time zone can span more than half an ' +
+      'hour of sunset difference.',
+    requiresConfirmation: true,
+  };
+}
+
+/**
+ * Mark a location as confirmed by the user. This is the only way a location
+ * becomes eligible for writing events: the sync planner refuses unconfirmed
+ * ones, so a suggestion can never silently become a calculation.
+ */
+export function confirmLocation(
+  location: CalculationLocation,
+  source: LocationSource = 'user_selected',
+): CalculationLocation {
+  return { ...location, source, confirmedByUser: true };
 }
 
 /** Built-in provider used by the Phase 1 prototype. */

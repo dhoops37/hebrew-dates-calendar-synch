@@ -15,7 +15,7 @@ calendar.
 
 ```bash
 pnpm install
-pnpm test        # 252 tests, ~2s
+pnpm test        # 378 tests, ~3s
 pnpm dev         # http://localhost:3000
 ```
 
@@ -45,13 +45,18 @@ refused rather than guessed.
 ## Layout
 
 ```
-packages/engine/   the calculation domain — no HTTP, no React, no database
-packages/ical/     RFC 5545 rendering of occurrences (backup export, and the
-                   Phase 4 subscription feed) — no I/O
-apps/web/          Next.js prototype UI, preview API, .ics export
-db/migrations/     reviewed SQL for Phase 2 (not yet applied)
-docs/              review, architecture, data model, calculation rules, roadmap
+packages/engine/           the calculation domain — no HTTP, no React, no database
+packages/sync/             reconciliation planning: desired vs actual → actions
+packages/google-calendar/  Google Calendar event payloads
+packages/ical/             RFC 5545 rendering (backup export + subscription feed)
+apps/web/                  Next.js prototype UI, preview API, .ics export
+db/migrations/             reviewed SQL, verified against Postgres 16
+db/tests/                  constraint checks proving the schema's product rules
+docs/                      review, decisions, architecture, data model, rules, roadmap
 ```
+
+Every package is pure: no network, no database, no credentials. The riskiest
+logic in the product is therefore tested exhaustively in a couple of seconds.
 
 ## Documents
 
@@ -96,6 +101,10 @@ Three invariants the engine holds, each with tests:
    return the applied date *and* the alternative.
 3. **Output is deterministic.** Same input, same occurrence keys and content
    hashes — which is what makes synchronisation idempotent.
+4. **Sunset comes from a place, never from a time zone.** The destination
+   calendar's own zone is a display hint; latitude and longitude are the
+   calculation. A location suggested from a zone must be confirmed before
+   anything is written.
 
 ## Testing
 

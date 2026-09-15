@@ -31,21 +31,51 @@ import type {
   SourceRecordType,
   SunsetResult,
 } from './types';
+export type { CalculationLocation } from './types';
+
+/**
+ * Google Calendar's `visibility` vocabulary, restricted to the two values this
+ * product uses.
+ */
+export type EventVisibility = 'default' | 'private';
 
 /** Where events go, and how they should look when they get there. */
 export interface DestinationCalendar {
   /** Stable identifier of this destination. Feeds the external event ID. */
   id: string;
   destinationType: 'google' | 'ical_feed';
-  /** The location whose sunsets time these events. One per destination. */
+  /**
+   * The location whose sunsets time these events — the *only* source of the
+   * coordinates a sunset is computed from. Separate from `calendarTimezoneHint`
+   * on purpose; see `CalculationLocation`.
+   */
   location: CalculationLocation;
+  /**
+   * The destination calendar's own IANA time zone, as reported by the provider
+   * (Google's `calendars.get` returns `timeZone`).
+   *
+   * Used for two things and nothing else:
+   *   1. seeding a location *suggestion* the user then confirms;
+   *   2. the `timeZone` field on a timed event, so the calendar client renders
+   *      it the way the rest of that calendar is rendered.
+   *
+   * It is never an input to a sunset calculation. A time zone is not a place.
+   */
+  calendarTimezoneHint?: string;
   displayMode: DisplayMode;
   language?: 'en' | 'he';
   /**
-   * Dates of death on a calendar that may be shared or shown at work is a real
-   * privacy risk, so events default to private.
+   * Event-level visibility. Defaults to `default`, meaning the event inherits
+   * the calendar's own visibility, so **calendar-level sharing permissions
+   * decide who can see the details**. Events are still marked
+   * `transparency: transparent` (Free) so they never make the user look busy.
+   *
+   * `private` is available for a user who wants details hidden even from people
+   * they have shared the calendar with, but it is not the default: marking every
+   * event private makes a shared family calendar useless, which is the main way
+   * this product is meant to be used.
    */
-  visibility?: 'private' | 'calendar_default';
+  visibility?: EventVisibility;
 }
 
 /** The parts of a source record that reach the event content. */
@@ -58,7 +88,8 @@ export interface SourceRecordContent {
 
 export type OccurrenceWarning =
   | { code: 'NO_SUNSET'; message: string }
-  | { code: 'AMBIGUOUS_HEBREW_DATE'; message: string };
+  | { code: 'AMBIGUOUS_HEBREW_DATE'; message: string }
+  | { code: 'LOCATION_NOT_CONFIRMED'; message: string };
 
 /**
  * One occurrence, rendered for one destination. Everything a calendar adapter
@@ -66,6 +97,14 @@ export type OccurrenceWarning =
  */
 export interface DestinationEvent extends HebrewOccurrence {
   destinationCalendarId: string;
+  /**
+   * How this event should be represented in the destination. Carried on the
+   * event rather than left to the caller, because an adapter that inferred it
+   * from "did sunset resolve?" would silently switch representation at polar
+   * latitudes, or worse, write a timed event for a calendar configured for
+   * all-day ones.
+   */
+  displayMode: DisplayMode;
   /**
    * Deterministic external event ID, derived from the occurrence key and the
    * destination. Google requires base32hex; a retried insert therefore addresses
@@ -90,7 +129,13 @@ export interface DestinationEvent extends HebrewOccurrence {
   };
   title: string;
   description: string;
-  visibility: 'private' | 'calendar_default';
+  visibility: EventVisibility;
+  /**
+   * The zone a calendar client should render this event in: the destination
+   * calendar's own zone when known, otherwise the location's. Purely a display
+   * concern — the instants in `timing` are already absolute.
+   */
+  displayTimezoneId: string;
   /** Hash of everything that reaches the destination event. Drives reconciliation. */
   contentHash: string;
   /** The location as used, so a later location change is detectable. */
@@ -142,7 +187,11 @@ export function renderForDestination(
 
   const title = eventTitle(contentInput);
   const description = eventDescription(contentInput);
-  const visibility = destination.visibility ?? 'private';
+  // Default visibility: calendar-level sharing decides who sees the details.
+  const visibility: EventVisibility = destination.visibility ?? 'default';
+  // Sunset came from the location's coordinates; this only picks the zone the
+  // client renders the (already absolute) instant in.
+  const displayTimezoneId = destination.calendarTimezoneHint ?? location.timezoneId;
 
   const warnings: OccurrenceWarning[] = [];
   if (!timing) {
@@ -157,10 +206,25 @@ export function renderForDestination(
   for (const ambiguity of occurrence.ambiguities) {
     warnings.push({ code: 'AMBIGUOUS_HEBREW_DATE', message: ambiguity.explanation });
   }
+  // A location the user has not confirmed may well be wrong, and a wrong
+  // location is a wrong sunset every single year. Rendering still happens so the
+  // user can see the preview they are being asked to confirm, but the sync
+  // planner refuses to write these events anywhere.
+  if (location.confirmedByUser !== true) {
+    warnings.push({
+      code: 'LOCATION_NOT_CONFIRMED',
+      message:
+        `Sunset times here were calculated for ${location.displayName}, which has not ` +
+        'been confirmed yet. Confirm the calculation location before these dates are ' +
+        'added to a calendar — a time zone covers a lot of ground, and sunset can ' +
+        'differ by more than half an hour across one.',
+    });
+  }
 
   return {
     ...occurrence,
     destinationCalendarId: destination.id,
+    displayMode,
     googleEventId: googleEventId(occurrence.key, destination.id),
     start,
     end,
@@ -169,6 +233,7 @@ export function renderForDestination(
     title,
     description,
     visibility,
+    displayTimezoneId,
     // Hashed over exactly what reaches the destination event, so a location,
     // mode or visibility change forces an update and nothing else does.
     contentHash: contentHash({
@@ -179,7 +244,10 @@ export function renderForDestination(
       startIso: timing?.startIso ?? null,
       endIso: timing?.endIso ?? null,
       allDay,
-      timezoneId: location.timezoneId,
+      // Both zones are hashed: the location's zone is part of the calculation,
+      // and the display zone reaches the destination event.
+      locationTimezoneId: location.timezoneId,
+      displayTimezoneId,
       transparency: 'transparent',
       calculationVersion: CALCULATION_VERSION,
     }),

@@ -82,10 +82,22 @@ CREATE TABLE destination_calendars (
   display_mode          text NOT NULL DEFAULT 'exact_sunset'
                           CHECK (display_mode IN ('exact_sunset', 'two_day_all_day')),
   language              text NOT NULL DEFAULT 'en' CHECK (language IN ('en', 'he')),
-  -- Dates of death on a calendar that might be shared or shown at work is a real
-  -- privacy risk, so events default to private.
-  event_visibility      text NOT NULL DEFAULT 'private'
-                          CHECK (event_visibility IN ('private', 'calendar_default')),
+
+  -- The calendar's OWN IANA zone, as reported by the provider (Google's
+  -- calendars.get returns timeZone). This is a HINT, used only to seed a
+  -- location suggestion and to tell the client how to render a timed event.
+  -- It is never an input to a sunset calculation - that comes from
+  -- calendar_locations.latitude/longitude. A time zone is not a place.
+  calendar_timezone_hint text,
+
+  -- Google Calendar's own vocabulary. 'default' means the event inherits the
+  -- calendar's visibility, so CALENDAR-LEVEL SHARING decides who can see the
+  -- details - which is how a shared family calendar is meant to work. Events are
+  -- still transparency=transparent (Free) so they never make anyone look busy.
+  -- 'private' remains available for a user who wants details hidden even from
+  -- people they have shared the calendar with.
+  event_visibility      text NOT NULL DEFAULT 'default'
+                          CHECK (event_visibility IN ('default', 'private')),
   active                boolean NOT NULL DEFAULT true,
   created_at            timestamptz NOT NULL DEFAULT now(),
   updated_at            timestamptz NOT NULL DEFAULT now()
@@ -96,12 +108,18 @@ CREATE INDEX destination_calendars_dataset_idx ON destination_calendars (dataset
 
 -- ---------------------------------------------------------------- location --
 
--- Latitude and longitude are useless without the IANA zone: the zone cannot be
--- derived from coordinates at run time and is required to render a sunset
--- instant as a wall-clock time. use_elevation is stored because applying
--- elevation moves sunset by minutes and must be reproducible.
--- One location per destination calendar, not per dataset: that is the whole
--- point of the split.
+-- The geography sunset is calculated from. One location per destination
+-- calendar, not per dataset: that is the whole point of the family split.
+--
+-- Latitude and longitude are the sunset inputs. timezone_id says how to render
+-- the resulting instant as a wall-clock time; it is a property of THIS PLACE and
+-- is deliberately not the same column as
+-- destination_calendars.calendar_timezone_hint. A zone can never substitute for
+-- coordinates: America/New_York spans about 20 degrees of longitude, across
+-- which sunset differs by more than half an hour.
+--
+-- use_elevation is stored because applying elevation moves sunset by minutes and
+-- must be reproducible from the row alone.
 CREATE TABLE calendar_locations (
   id                       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   destination_calendar_id  uuid NOT NULL UNIQUE
@@ -116,9 +134,33 @@ CREATE TABLE calendar_locations (
   use_elevation       boolean NOT NULL DEFAULT true,
   timezone_id         text NOT NULL,
   geocoder_place_id   text,
+
+  -- How this location was arrived at. A suggestion derived from a time zone is
+  -- not the same thing as a place the user chose, and the difference must be
+  -- visible in the data.
+  source              text NOT NULL DEFAULT 'user_selected' CHECK (source IN (
+                        'user_selected', 'geocoded',
+                        'timezone_suggestion', 'calendar_timezone_hint')),
+
+  -- When the user explicitly confirmed this is where sunset should be
+  -- calculated. NULL means "suggested, not yet confirmed": the sync planner
+  -- refuses to write events for such a destination, so a guess can never
+  -- silently become a calculation. Onboarding shows the resolved place name and
+  -- asks.
+  confirmed_at        timestamptz,
+  confirmed_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+
   created_at          timestamptz NOT NULL DEFAULT now(),
-  updated_at          timestamptz NOT NULL DEFAULT now()
+  updated_at          timestamptz NOT NULL DEFAULT now(),
+
+  -- A location that came from a suggestion cannot claim to be user-selected.
+  CONSTRAINT confirmation_requires_a_confirmer
+    CHECK (confirmed_at IS NULL OR confirmed_by_user_id IS NOT NULL)
 );
+
+-- The planner's gate: which destinations are cleared to receive events.
+CREATE INDEX calendar_locations_unconfirmed_idx ON calendar_locations (destination_calendar_id)
+  WHERE confirmed_at IS NULL;
 
 -- ----------------------------------------------------------- source records --
 

@@ -31,13 +31,22 @@ in Phase 1 depends on them. D4 is now **decided**; the rest still await sign-off
 ## Package layout
 
 ```
-packages/engine/     @hebrew-dates/engine   pure calculation, no I/O
-packages/ical/       @hebrew-dates/ical     RFC 5545 rendering, no I/O
-apps/web/            @hebrew-dates/web      Next.js UI + API routes
-db/migrations/       plain SQL, applied in order
-db/tests/            constraint verification for the migrations
-docs/                this file and its siblings
+packages/engine/           @hebrew-dates/engine           pure calculation, no I/O
+packages/sync/             @hebrew-dates/sync             reconciliation planning, pure
+packages/google-calendar/  @hebrew-dates/google-calendar  Google event payloads, pure
+packages/ical/             @hebrew-dates/ical             RFC 5545 rendering, no I/O
+apps/web/                  @hebrew-dates/web              Next.js UI + API routes
+db/migrations/             plain SQL, applied in order
+db/tests/                  constraint verification for the migrations
+docs/                      this file and its siblings
 ```
+
+Note what all four packages have in common: **no network, no database, no
+credentials.** The riskiest logic in the product — the anniversary rules, the
+reconciliation decision table, and the exact shape of what gets written to
+someone's calendar — is all pure, so it is tested exhaustively in about two
+seconds. What remains for Phase 2 is an executor: something that takes a plan and
+a payload and performs HTTP.
 
 ### The two layers inside the engine
 
@@ -58,7 +67,7 @@ composes the two for the common single-calendar case.
 Later phases add, without disturbing the above:
 
 ```
-packages/google-calendar/   Google Calendar adapter (Phase 2)
+packages/google-client/     the HTTP executor: OAuth, insert/patch/delete, 409 handling
 apps/worker/                background jobs (Phase 3)
 ```
 
@@ -139,20 +148,41 @@ derived from that key. A retry after an ambiguous timeout addresses the same
 event; a duplicate insert returns 409, which the reconciler treats as "exists,
 fetch and compare", not as an error.
 
-**2. Convergent, not event-sourced.** The reconciler computes the desired set,
-reads the actual set, and issues the difference:
+**2. Convergent, not event-sourced.** `planSync()` in `@hebrew-dates/sync`
+computes the desired set, reads the actual set, and returns the difference as a
+list of typed actions. A missed webhook, a crashed worker or a manual edit in
+Google all heal on the next run; nothing depends on having observed every
+intermediate state.
 
-```
-for each desired occurrence:
-    if no destination_event row      → create,  store external id + hash
-    elif stored hash ≠ desired hash  → update,  store new hash
-    else                             → no-op
-for each destination_event with no desired occurrence:
-                                     → delete (future only, by default)
-```
+The decision table, in full:
 
-A missed webhook, a crashed worker or a manual edit in Google all heal on the
-next run. Nothing depends on having observed every intermediate state.
+| Desired | Stored | Result |
+|---|---|---|
+| yes | absent | **create** (`missing_in_destination`) |
+| yes | row, no external ID | **create** (`previous_attempt_incomplete`) |
+| yes | hash differs | **update** (`content_changed`) |
+| yes | hash matches, `synced` | **noop** (`already_synced`) |
+| yes | hash matches, mid-write status | **update** (`previous_attempt_incomplete`) |
+| yes | `failed` / `retry_scheduled`, backoff elapsed | **update** (`retry_after_failure`) |
+| yes | `failed`, backoff not elapsed | **skip**, non-blocking |
+| yes | attempts ≥ limit | **skip**, blocking |
+| yes | event already ended | **noop** (`past_event_preserved`) |
+| no | row with external ID, future | **delete** (`no_longer_desired`) |
+| no | row with external ID, past | **noop** (`past_event_preserved`) |
+| no | row never written | **noop** |
+
+Whole-destination blocks are evaluated first, so a blocked calendar yields an
+explainable plan with zero writes rather than a half-applied one:
+
+- **unconfirmed calculation location** — a wrong location is a wrong sunset every
+  year, and it would look authoritative;
+- **revoked or unauthorised connection**, or a **deleted destination calendar**;
+- **dedicated calendar not created yet**.
+
+Actions are ordered nearest-first and capped by `maxWrites`, so a large first
+sync respects the provider's per-calendar write rate and a truncated pass still
+leaves the years the user is about to need. `hasMoreWork` tells the caller to
+come back.
 
 **3. Bounded retries.** Exponential backoff for transient failures; immediate
 stop plus a user-visible connection warning for revoked authorisation, a deleted

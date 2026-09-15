@@ -50,16 +50,28 @@ datasets                             -- the shared set of Hebrew dates
   active           boolean not null default true
 
 destination_calendars                -- ONE MEMBER'S calendar, fed by a dataset
-  id                uuid pk
-  dataset_id        uuid not null → datasets(id)
-  user_id           uuid → users(id)        -- null for a shared calendar
-  name              text not null
-  destination_type  text not null           -- 'google' | 'ical_feed'
-  display_mode      text not null default 'exact_sunset'
-  language          text not null default 'en'
-  event_visibility  text not null default 'private'
-  active            boolean not null default true
+  id                     uuid pk
+  dataset_id             uuid not null → datasets(id)
+  user_id                uuid → users(id)   -- null for a shared calendar
+  name                   text not null
+  destination_type       text not null      -- 'google' | 'ical_feed'
+  display_mode           text not null default 'exact_sunset'
+  language               text not null default 'en'
+  calendar_timezone_hint text               -- the CALENDAR's own zone: a hint only
+  event_visibility       text not null default 'default'   -- Google's vocabulary
+  active                 boolean not null default true
 ```
+
+Two fields there carry product decisions worth restating:
+
+- `calendar_timezone_hint` is the destination calendar's own IANA zone, as
+  reported by Google's `calendars.get`. It seeds a location *suggestion* and
+  supplies `timeZone` on a timed event. **It is never an input to a sunset
+  calculation** — that comes from `calendar_locations.latitude/longitude`. A
+  separate column, not a reused one, so the two cannot be confused.
+- `event_visibility` defaults to `'default'`, Google's own value, meaning the
+  event inherits the calendar's visibility and **calendar-level sharing decides
+  who sees the details**. Events stay `transparency: transparent` regardless.
 
 Note what a `dataset` does **not** have: a location or a destination. Those are
 properties of each member's calendar, because members can be in different cities
@@ -77,10 +89,24 @@ calendar_locations
   longitude           numeric(9,6) not null           -- check -180..180
   elevation_meters    integer
   use_elevation       boolean not null default true   -- ADDED, see §3.3
-  timezone_id         text not null                   -- IANA, e.g. Asia/Jerusalem
+  timezone_id         text not null                   -- IANA zone OF THIS PLACE
   geocoder_place_id   text
+  source              text not null default 'user_selected'
+                        -- 'user_selected'|'geocoded'|'timezone_suggestion'|'calendar_timezone_hint'
+  confirmed_at        timestamptz                     -- NULL = suggested, not confirmed
+  confirmed_by_user_id uuid → users(id)
   created_at, updated_at
+
+  CHECK (confirmed_at IS NULL OR confirmed_by_user_id IS NOT NULL)
+  INDEX (destination_calendar_id) WHERE confirmed_at IS NULL   -- the planner's gate
 ```
+
+`latitude` and `longitude` are the sunset inputs; `timezone_id` says how to
+render the result. `confirmed_at` NULL means the location is a *suggestion* — the
+sync planner refuses to write events for such a destination, so a guess derived
+from a time zone can never silently become a calculation. The confirmation
+records who made it, so it is auditable rather than a boolean that might have
+been defaulted.
 
 One current location per destination calendar. The MVP keeps one row and updates
 it, recording the change in `sync_jobs` so the recalculation is auditable.
@@ -253,6 +279,9 @@ famous-yahrzeit records and PRD 33 requires change history.
 | 3.7 | `rule_applied` and `ambiguities` stored per occurrence | PRD 5.4 promises the user can see "the rule used for unusual Hebrew-calendar cases". That requires persisting it. |
 | 3.8 | `encryption_key_id` on the Google connection | Envelope encryption is only useful if keys can be rotated |
 | 3.9 | `next_attempt_at` on destination events | PRD 27's backoff needs a schedulable column, not just a status |
+| 3.10 | `calendar_timezone_hint` on destination calendars, separate from the location's zone | A time zone is not a place; `America/New_York` spans more than half an hour of sunset difference. Decision #11 |
+| 3.11 | `source`, `confirmed_at`, `confirmed_by_user_id` on locations | A suggestion must not become a calculation without the user saying so. Decision #11 |
+| 3.12 | `event_visibility` defaults to `'default'` and uses Google's vocabulary | Calendar-level sharing governs who sees details; a shared family calendar is the point. Decision #12 |
 
 ## 4. Migration plan
 

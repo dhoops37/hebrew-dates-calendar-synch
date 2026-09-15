@@ -16,9 +16,9 @@ recorded so the schema leaves room for it.
 | 8 | **Elevation is applied by default.** | **Built** |
 | 9 | Gregorian anniversaries: keep the back end able to express them, keep the front end Hebrew-only. | `SourceRecordType` stays open; no UI |
 | 10 | No separate daytime event — use reminders. | No change |
-| 11 | **Location comes from the calendar's own time zone, or is auto-detected at setup, and is always changeable.** | **Built** (browser zone); calendar zone in Phase 2 |
-| 12 | Event visibility is an option; personal calendars are the expected case. | Next: `visibility` on the calendar, default private |
-| 13 | Pausing a record **hides** future events by default. | Next: schema default |
+| 11 | **Calculation location and calendar time zone are explicitly separate.** Sunset always comes from the destination's saved latitude/longitude + IANA zone. The calendar's own zone is a hint and a display setting, never a substitute. The user confirms a suggested location during onboarding. | **Built** — see §3 |
+| 12 | **Events are `visibility: default`, `transparency: transparent`.** Calendar-level sharing permissions decide who sees the details. Per-event `private` stays available. | **Built** — see §4 |
+| 13 | Pausing a record **hides** future events by default. | **Built**: schema default |
 | 14 | No halachic reviewer yet; several rabbis to approach. | `CALCULATION-RULES.md` is the review packet |
 | 15 | **Narrow OAuth scope agreed: `calendar.app.created`.** The app can only touch calendars it created itself. | Decided; Phase 2 implements it |
 | 16 | **One editor** for the famous-yahrzeit library. | Editorial workflow simplifies: no second-reviewer gate |
@@ -188,3 +188,62 @@ So the choice is:
 Nothing is blocked on this until Phase 2 begins the OAuth work, but it does need
 deciding before the Google verification submission, since the requested scopes
 are part of that review.
+
+---
+
+## 3. Location is a place, not a time zone (#11) — built
+
+The two are now separate concepts in the types, the schema and the UI, because
+conflating them is a silent, systematic error: `America/New_York` spans about
+20° of longitude, across which sunset differs by more than half an hour, and
+several IANA zones span far more.
+
+| Concept | Where it lives | What it is used for |
+|---|---|---|
+| **Calculation location** | `calendar_locations.latitude/longitude` + `timezone_id` | **The only input to a sunset calculation.** The zone renders the resulting instant as a wall-clock time. |
+| **Calendar time zone** | `destination_calendars.calendar_timezone_hint` | Seeds a location *suggestion*; supplies `timeZone` on a Google event so the client renders it like the rest of that calendar. Never a calculation input. |
+
+Enforced in three places rather than by convention:
+
+1. **Types.** `CalculationLocation` documents the distinction and carries
+   `source` and `confirmedByUser`. `suggestLocationForTimezone` returns a
+   `LocationSuggestion` — `{ requiresConfirmation: true, confirmedByUser: false }`
+   — not a location. `confirmLocation()` is the only route from one to the other.
+2. **The engine.** Every event rendered for an unconfirmed location carries a
+   `LOCATION_NOT_CONFIRMED` warning. Tests assert that changing
+   `calendarTimezoneHint` to anything at all — Los Angeles, Kiritimati, UTC —
+   leaves the calculated instants byte-identical, while changing the *location*
+   moves them.
+3. **The planner.** A destination whose location is unconfirmed is blocked
+   entirely: zero writes, with a reason the UI can show. It also re-checks the
+   per-event warnings and trusts the stricter signal, so the two cannot drift
+   apart.
+
+Onboarding shows the suggestion with its resolved place name, its coordinates
+and where the suggestion came from, and asks. Picking a location from the list
+by hand counts as confirmation; accepting an auto-detected one takes a click.
+
+The schema records *who* confirmed and *when* (`confirmed_at`,
+`confirmed_by_user_id`, with a CHECK that the two travel together), so a
+confirmation is auditable rather than a boolean someone might have defaulted.
+
+## 4. Event visibility (#12) — built
+
+Generated Google events are now:
+
+```
+visibility:    'default'        ← calendar sharing decides who sees details
+transparency:  'transparent'    ← unchanged: never makes anyone look busy
+```
+
+`visibility: 'default'` means the event inherits the calendar's own visibility,
+so a family calendar shared with relatives actually shows them the dates —
+which is the main way this product is meant to be used. Marking every event
+private would have defeated that.
+
+Per-event `private` remains available on a destination for a user who wants
+details hidden even from people they have shared the calendar with.
+
+The vocabulary is now Google's own (`default` | `private`), not an invented pair,
+so the schema value maps straight onto the API field with no translation layer
+to get wrong. A CHECK constraint rejects anything else.

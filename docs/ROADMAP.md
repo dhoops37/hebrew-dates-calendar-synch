@@ -61,16 +61,32 @@ that decision #18 promoted from "future version" to required.
   legitimately has two events in two zones while a duplicate in one member's
   calendar is rejected.
 
-### Next decision-free step
+- [x] **Location and calendar time zone made explicitly separate** (decision
+  #11). Sunset comes only from the destination's saved coordinates + IANA zone;
+  the calendar's own zone is a hint and a display setting. Suggested locations
+  must be confirmed, and the planner refuses unconfirmed ones.
+- [x] **Event visibility changed to `default`** (decision #12), keeping
+  `transparency: transparent`. Calendar-level sharing governs who sees details.
 
-- [ ] **Reconciliation planner as a pure function.** `plan(desired, actual)` →
-  `create | update | delete | noop` per destination event, with no network and no
-  database: the highest-risk logic in Phase 2, fully testable today. Writing it
-  before the Google client exists means the duplicate-prevention behaviour is
-  proven before any credential is issued.
-- [ ] **Google event payload mapper.** `DestinationEvent` → Google
-  `events.insert` request body, pure and snapshot-tested. Also needs no
-  credentials.
+- [x] **`@hebrew-dates/sync` — reconciliation planner.** `planSync(desired,
+  actual)` → typed `create | update | delete | noop | skip` actions. Pure: no
+  network, no database. Handles interrupted runs, retries with backoff, attempt
+  limits, past-event preservation, nearest-first ordering, write budgets, and
+  whole-destination blocks. **53 tests.**
+- [x] **`@hebrew-dates/google-calendar` — event payload mapper.**
+  `toGoogleEvent(event)` → a Google `Event` resource. Encodes the deterministic
+  ID, `transparency: transparent`, `visibility: default`, the timed-vs-all-day
+  choice, the exclusive all-day end date, reminder overrides with Google's
+  limits, and queryable provenance in `extendedProperties.private`.
+  **40 tests.**
+
+### Next: needs decisions (see docs/DECISIONS.md §5)
+
+- [ ] **Postgres provisioning + typed query layer** — blocked on D1/D3.
+- [ ] **`@hebrew-dates/google-client`** — the HTTP executor: OAuth with
+  `calendar.app.created`, insert/patch/delete, 409-means-exists handling, 403
+  and 404 classification, rate-limit backoff. This is the first code in the
+  project that needs a credential.
 
 ---
 
