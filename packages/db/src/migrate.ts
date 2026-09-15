@@ -146,6 +146,7 @@ export const EXPECTED_TABLES = [
   'oauth_states',
   'owner_members',
   'owners',
+  'rate_limits',
   'reminder_rules',
   'schema_migrations',
   'sessions',

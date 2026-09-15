@@ -155,6 +155,10 @@ export interface CalendarLocationsTable {
   /** IANA zone OF THIS PLACE, used to render the calculated instant. */
   timezone_id: string;
   geocoder_place_id: string | null;
+  /** Which provider resolved these coordinates; NULL for the built-in catalogue. */
+  geocoder: string | null;
+  /** What the provider returned, before any tidying. `display_name` is what the user confirmed. */
+  geocoder_display_name: string | null;
   source: Generated<LocationSourceValue>;
   /** NULL means suggested-but-unconfirmed. The sync planner refuses those. */
   confirmed_at: TimestampNullable;
@@ -308,6 +312,14 @@ export interface AuditLogTable {
   detail: Generated<unknown>;
 }
 
+export interface RateLimitsTable {
+  /** Caller-composed key, e.g. `authStart:203.0.113`. */
+  bucket: string;
+  window_start: TimestampRequired;
+  attempts: Generated<number>;
+  updated_at: Timestamp;
+}
+
 export interface SchemaMigrationsTable {
   filename: string;
   applied_at: Timestamp;
@@ -331,6 +343,7 @@ export interface Database {
   google_accounts: GoogleAccountsTable;
   google_calendar_connections: GoogleCalendarConnectionsTable;
   audit_log: AuditLogTable;
+  rate_limits: RateLimitsTable;
   schema_migrations: SchemaMigrationsTable;
 }
 

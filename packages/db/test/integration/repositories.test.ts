@@ -9,6 +9,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { authorise } from '../../src/access';
+import { readAuditTrail, recordAuditEvent } from '../../src/audit';
 import type { DatasetAccess } from '../../src/access';
 import {
   DEFAULT_REMINDERS,
@@ -25,7 +26,6 @@ import {
   markEventFailed,
   markEventSynced,
   pauseSourceRecord,
-  recordAudit,
   saveLocation,
   seedDefaultReminders,
   setHorizon,
@@ -739,14 +739,18 @@ describe.runIf(describeWithDatabase)('repositories', () => {
   /* ------------------------------------------------------------ audit log -- */
 
   describe('audit log', () => {
-    it('records an action with its actor and detail', async () => {
-      await recordAudit(harness.db, {
-        actorUserId: userId,
-        action: 'location.confirmed',
-        subjectType: 'destination_calendar',
-        subjectId: destinationCalendarId,
-        detail: { timezoneId: 'Asia/Jerusalem', source: 'user_selected' },
-      });
+    it('records a typed event with its actor', async () => {
+      await recordAuditEvent(
+        harness.db,
+        {
+          action: 'location.confirmed',
+          subjectType: 'destination_calendar',
+          subjectId: destinationCalendarId,
+          timezoneId: 'Asia/Jerusalem',
+          source: 'user_selected',
+        },
+        { actorUserId: userId },
+      );
 
       const entry = await harness.db
         .selectFrom('audit_log')
@@ -756,23 +760,71 @@ describe.runIf(describeWithDatabase)('repositories', () => {
 
       expect(entry.actor_user_id).toBe(userId);
       expect(entry.subject_id).toBe(destinationCalendarId);
+      // Only the declared fields: the zone and the source, never the
+      // coordinates and never the place's name.
       expect(entry.detail).toEqual({ timezoneId: 'Asia/Jerusalem', source: 'user_selected' });
       expect(entry.at).toBeInstanceOf(Date);
     });
 
     it('accepts a system action with no actor', async () => {
-      await recordAudit(harness.db, {
-        actorUserId: null,
-        action: 'sync.job.completed',
-        subjectType: 'sync_job',
-      });
+      await recordAuditEvent(
+        harness.db,
+        {
+          action: 'job.failed',
+          subjectType: 'sync_job',
+          subjectId: '00000000-0000-4000-8000-000000000001',
+          jobType: 'reconcile',
+          failureKind: 'google.transient',
+        },
+        { actorUserId: null },
+      );
       const entry = await harness.db
         .selectFrom('audit_log')
         .selectAll()
-        .where('action', '=', 'sync.job.completed')
+        .where('action', '=', 'job.failed')
         .executeTakeFirstOrThrow();
       expect(entry.actor_user_id).toBeNull();
-      expect(entry.detail).toEqual({});
+      expect(entry.detail).toEqual({ jobType: 'reconcile', failureKind: 'google.transient' });
+    });
+
+    it('refuses an unsafe value before it reaches the database', async () => {
+      // The guard fires at the writer, so nothing lands even partially.
+      await expect(
+        recordAuditEvent(
+          harness.db,
+          {
+            action: 'calendar.created',
+            subjectType: 'destination_calendar',
+            subjectId: destinationCalendarId,
+            googleCalendarId: 'Avraham ben Yitzchak' as string,
+          },
+          { actorUserId: userId },
+        ),
+      ).rejects.toThrow(/does not accept/);
+
+      const rows = await harness.db
+        .selectFrom('audit_log')
+        .select('id')
+        .where('action', '=', 'calendar.created')
+        .execute();
+      expect(rows).toHaveLength(0);
+    });
+
+    it('reads a subject\'s trail newest first', async () => {
+      const subjectId = '00000000-0000-4000-8000-000000000002';
+      for (const active of [false, true]) {
+        await recordAuditEvent(
+          harness.db,
+          { action: 'date.paused', subjectType: 'source_record', subjectId, active },
+          { actorUserId: userId, at: new Date(active ? Date.now() : Date.now() - 60_000) },
+        );
+      }
+      const trail = await readAuditTrail(harness.db, {
+        subjectType: 'source_record',
+        subjectId,
+      });
+      expect(trail).toHaveLength(2);
+      expect((trail[0]?.detail as { active: boolean }).active).toBe(true);
     });
   });
 });

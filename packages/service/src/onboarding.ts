@@ -10,7 +10,7 @@
 import {
   confirmLocationRow,
   getLocation,
-  recordAudit,
+  recordAuditEvent,
   saveLocation,
   updateDestinationCalendar,
   type CalendarLocationRow,
@@ -135,14 +135,20 @@ export async function confirmLocation(
     });
   }
 
-  await recordAudit(context.db, {
-    actorUserId: params.userId,
-    action: 'location.confirmed',
-    subjectType: 'destination_calendar',
-    subjectId: params.destinationCalendarId,
-    // Coordinates are the user's own data and not needed for an audit trail.
-    detail: { timezoneId: params.location.timezoneId, source: 'user_selected' },
-  });
+  await recordAuditEvent(
+    context.db,
+    {
+      // The zone only. Coordinates are the user's own data and reveal where
+      // they live to a precision an audit trail has no use for.
+      action: 'location.confirmed',
+      subjectType: 'destination_calendar',
+      subjectId: params.destinationCalendarId,
+      timezoneId: params.location.timezoneId,
+      source: 'user_selected',
+      ...(params.geocoder ? { geocoder: params.geocoder } : {}),
+    },
+    { actorUserId: params.userId, at: context.now() },
+  );
 
   return saved;
 }
@@ -154,13 +160,17 @@ export async function acceptSuggestedLocation(
   params: { destinationCalendarId: string; userId: string },
 ): Promise<void> {
   await confirmLocationRow(context.db, access, params);
-  await recordAudit(context.db, {
-    actorUserId: params.userId,
-    action: 'location.confirmed',
-    subjectType: 'destination_calendar',
-    subjectId: params.destinationCalendarId,
-    detail: { source: 'timezone_suggestion_accepted' },
-  });
+  await recordAuditEvent(
+    context.db,
+    {
+      action: 'location.confirmed',
+      subjectType: 'destination_calendar',
+      subjectId: params.destinationCalendarId,
+      timezoneId: params.timezoneId,
+      source: 'timezone_suggestion',
+    },
+    { actorUserId: params.userId, at: context.now() },
+  );
 }
 
 export interface AddDateResult {

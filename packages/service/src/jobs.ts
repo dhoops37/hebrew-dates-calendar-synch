@@ -26,11 +26,12 @@ import {
   enqueueJobIfAbsent,
   purgeExpired,
   reclaimAbandonedJobs,
-  recordAudit,
+  recordAuditEvent,
   requeueJob,
   systemAccess,
   type SyncJobRow,
 } from '@hebrew-dates/db';
+import { GoogleApiError, GoogleTransportError } from '@hebrew-dates/google-client';
 import { nextAttemptAt } from '@hebrew-dates/sync';
 import type { ServiceContext } from './context';
 import { extendDatasetHorizon, DEFAULT_HORIZON_YEARS } from './records';
@@ -181,13 +182,19 @@ async function runOneJob(
       jobId: job.id,
       scheduledAt: new Date(nextAttemptAt(job.attempt_count, context.now().getTime())),
     });
-    await recordAudit(context.db, {
-      actorUserId: null,
-      action: 'job.failed',
-      subjectType: 'sync_job',
-      subjectId: job.id,
-      detail: { jobType: job.job_type, error: message.slice(0, 200) },
-    });
+    await recordAuditEvent(
+      context.db,
+      {
+        action: 'job.failed',
+        subjectType: 'sync_job',
+        subjectId: job.id,
+        jobType: job.job_type,
+        // A category, not the message: an upstream error body can contain a
+        // calendar id, a URL with a token in it, or the user's own text.
+        failureKind: classifyJobFailure(error),
+      },
+      { actorUserId: null, at: context.now() },
+    );
     return { ...base, status: 'requeued', detail: message.slice(0, 200) };
   }
 }
@@ -249,6 +256,24 @@ async function finishSyncJob(
 
   await completeJob(context.db, { jobId: job.id, status: 'succeeded' });
   return { ...base, status: 'succeeded', detail };
+}
+
+/**
+ * Reduce a job failure to a category for the audit log.
+ *
+ * The full message still goes to the job row's `error_summary` and to the cron
+ * response, both of which are operator-facing and short-lived. The audit log is
+ * kept for years, so it keeps the category only.
+ */
+function classifyJobFailure(error: unknown): string {
+  if (error instanceof GoogleApiError) return `google.${error.kind}`;
+  if (error instanceof GoogleTransportError) return 'google.transport';
+  if (error instanceof Error) {
+    // The class name, not the message: a constructor name is a fixed
+    // vocabulary the developer chose, while a message is free text.
+    return `error.${error.constructor.name.replace(/[^A-Za-z0-9]/g, '')}`;
+  }
+  return 'unknown';
 }
 
 /**

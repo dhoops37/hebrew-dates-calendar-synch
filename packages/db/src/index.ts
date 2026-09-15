@@ -10,5 +10,7 @@ export * from './client';
 export * from './migrate';
 export * from './access';
 export * from './repositories';
+export * from './audit';
+export * from './rate-limit';
 export * from './jobs';
 export * from './sessions';

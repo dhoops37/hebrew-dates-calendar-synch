@@ -20,7 +20,7 @@ import {
   getDestinationCalendar,
   getSourceRecord,
   listSourceRecords,
-  recordAudit,
+  recordAuditEvent,
   setHorizon,
   upsertOccurrences,
   type DatasetAccess,
@@ -97,14 +97,22 @@ export async function createHebrewDate(
     horizonYears: input.horizonYears ?? SYNCHRONOUS_HORIZON_YEARS,
   });
 
-  await recordAudit(context.db, {
-    actorUserId: access.userId,
-    action: 'date.created',
-    subjectType: 'source_record',
-    subjectId: record.id,
-    // The type and month, never the person's name or relationship.
-    detail: { type: record.type, hebrewMonth: record.hebrew_month, hebrewDay: record.hebrew_day },
-  });
+  await recordAuditEvent(
+    context.db,
+    {
+      // The type and the Hebrew month/day. Never the person's name, their
+      // Hebrew name, the relationship, or the year of death.
+      action: 'date.created',
+      subjectType: 'source_record',
+      subjectId: record.id,
+      recordType: record.type,
+      hebrewMonth: record.hebrew_month,
+      hebrewDay: record.hebrew_day,
+      hasOriginalYear: record.original_hebrew_year !== null,
+      enteredAsGregorian: record.original_gregorian_date !== null,
+    },
+    { actorUserId: access.userId, at: context.now() },
+  );
 
   return { record, ...generated };
 }

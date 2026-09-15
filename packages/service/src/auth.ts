@@ -34,7 +34,7 @@ import {
   destroyAllSessionsForUser,
   generateToken,
   hashToken,
-  recordAudit,
+  recordAuditEvent,
   resolveSession,
   seedDefaultReminders,
   storeOauthState,
@@ -274,14 +274,18 @@ export async function completeGoogleSignIn(
     now,
   });
 
-  await recordAudit(context.db, {
-    actorUserId: user.id,
-    action: user.created ? 'account.created' : 'google.reconnected',
-    subjectType: 'google_account',
-    subjectId: account.id,
-    // Scopes only; never the token, never the email's local part.
-    detail: { grantedScopes: tokens.grantedScopes, sufficient: tokens.scopeCheck.sufficient },
-  });
+  await recordAuditEvent(
+    context.db,
+    {
+      // Scopes only. Never the token, and never the email's local part.
+      action: user.created ? 'account.created' : 'google.reconnected',
+      subjectType: 'google_account',
+      subjectId: account.id,
+      grantedScopes: tokens.grantedScopes,
+      scopeSufficient: tokens.scopeCheck.sufficient,
+    },
+    { actorUserId: user.id, at: now },
+  );
 
   return {
     userId: user.id,
@@ -435,13 +439,17 @@ export async function disconnectGoogle(
   await context.db.deleteFrom('google_accounts').where('id', '=', account.id).execute();
   await destroyAllSessionsForUser(context.db, params.userId);
 
-  await recordAudit(context.db, {
-    actorUserId: params.userId,
-    action: 'google.disconnected',
-    subjectType: 'google_account',
-    subjectId: account.id,
-    detail: { revokedAtGoogle, calendarDeleted },
-  });
+  await recordAuditEvent(
+    context.db,
+    {
+      action: 'google.disconnected',
+      subjectType: 'google_account',
+      subjectId: account.id,
+      revokedAtGoogle,
+      calendarDeleted,
+    },
+    { actorUserId: params.userId, at: context.now() },
+  );
 
   return { revokedAtGoogle, calendarDeleted };
 }

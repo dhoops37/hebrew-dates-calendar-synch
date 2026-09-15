@@ -629,24 +629,9 @@ export async function getReminders(
 
 /* ------------------------------------------------------------- audit log -- */
 
-export async function recordAudit(
-  db: Kysely<Database>,
-  entry: {
-    actorUserId: string | null;
-    action: string;
-    subjectType: string;
-    subjectId?: string | null;
-    detail?: Record<string, unknown>;
-  },
-): Promise<void> {
-  await db
-    .insertInto('audit_log')
-    .values({
-      actor_user_id: entry.actorUserId,
-      action: entry.action,
-      subject_type: entry.subjectType,
-      subject_id: entry.subjectId ?? null,
-      detail: JSON.stringify(entry.detail ?? {}) as unknown,
-    })
-    .execute();
-}
+/*
+ * Deliberately not here. The audit log has exactly one writer,
+ * `recordAuditEvent` in ./audit.ts, and it accepts only a member of a closed
+ * typed union — because a `detail: Record<string, unknown>` parameter is one
+ * careless spread away from keeping somebody's name or a token for years.
+ */

@@ -11,7 +11,7 @@
  * unsubscribe from the whole thing in one action, and nothing this app does can
  * disturb their appointments.
  */
-import { getDestinationCalendar, recordAudit, type DatasetAccess } from '@hebrew-dates/db';
+import { getDestinationCalendar, recordAuditEvent, type DatasetAccess } from '@hebrew-dates/db';
 import { GoogleApiError } from '@hebrew-dates/google-client';
 import { liveAccessToken } from './tokens';
 import type { ServiceContext } from './context';
@@ -25,6 +25,8 @@ export interface EnsureCalendarResult {
   googleCalendarId: string;
   /** False when the calendar already existed, so this call did nothing. */
   created: boolean;
+  /** True when a calendar the user had deleted in Google was put back. */
+  recreated: boolean;
 }
 
 /**
@@ -55,15 +57,20 @@ export async function ensureGoogleCalendar(
     .where('destination_calendar_id', '=', params.destinationCalendarId)
     .executeTakeFirst();
 
+  // Distinguishes "first calendar" from "the user deleted it in Google and we
+  // are putting it back", which are different events in the audit trail.
+  let recreated = false;
+
   if (existing?.google_calendar_id) {
     // Confirm it is still there. A user can delete the calendar from Google's
     // own UI, and continuing to write to a dead ID would produce a wall of 404s
     // rather than the one clear "it was deleted" this recovers from.
     try {
       await client.getCalendar(existing.google_calendar_id);
-      return { googleCalendarId: existing.google_calendar_id, created: false };
+      return { googleCalendarId: existing.google_calendar_id, created: false, recreated: false };
     } catch (error) {
       if (!(error instanceof GoogleApiError) || error.kind !== 'not_found') throw error;
+      recreated = true;
 
       await context.db
         .updateTable('google_calendar_connections')
@@ -126,15 +133,29 @@ export async function ensureGoogleCalendar(
     )
     .execute();
 
-  await recordAudit(context.db, {
-    actorUserId: params.userId,
-    action: 'calendar.created',
-    subjectType: 'destination_calendar',
-    subjectId: params.destinationCalendarId,
-    detail: { googleCalendarId: created.id, summary: created.summary },
-  });
+  await recordAuditEvent(
+    context.db,
+    // The calendar's summary is the user's own text, so it is not recorded —
+    // only Google's opaque id, which says which calendar without saying
+    // anything about the person.
+    recreated
+      ? {
+          action: 'calendar.recreated',
+          subjectType: 'destination_calendar',
+          subjectId: params.destinationCalendarId,
+          googleCalendarId: created.id,
+          reason: 'deleted_in_google',
+        }
+      : {
+          action: 'calendar.created',
+          subjectType: 'destination_calendar',
+          subjectId: params.destinationCalendarId,
+          googleCalendarId: created.id,
+        },
+    { actorUserId: params.userId, at: context.now() },
+  );
 
-  return { googleCalendarId: created.id, created: true };
+  return { googleCalendarId: created.id, created: true, recreated };
 }
 
 async function displayTimezoneFor(

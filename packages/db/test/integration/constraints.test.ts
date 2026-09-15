@@ -34,7 +34,11 @@ describe.runIf(describeWithDatabase)('database constraints', () => {
   /* -------------------------------------------------- the sunset-status rule -- */
 
   describe('a Gregorian-entered date must state which side of sunset it fell on', () => {
-    it('refuses a Gregorian original date with no sunset status', async () => {
+    it('refuses an ACTIVE Gregorian entry with no sunset status', async () => {
+      // The product rule is "never silently choose a Hebrew date". Since 0003
+      // that is expressed as "an unresolved entry may exist but may not be
+      // active", because the honest answer — "I do not know, ask me" — is a
+      // state the product has and therefore has to be storable.
       const failure = await expectRejection(() =>
         harness.db
           .insertInto('source_records')
@@ -47,10 +51,62 @@ describe.runIf(describeWithDatabase)('database constraints', () => {
             original_hebrew_year: 5750,
             original_gregorian_date: '1990-04-09',
             sunset_status: null,
+            active: true,
           })
           .execute(),
       );
-      expect(failure.constraint).toBe('gregorian_entry_needs_sunset_status');
+      expect(failure.constraint).toBe('unresolved_sunset_entry_cannot_be_active');
+    });
+
+    it('stores an unresolved entry as an inactive draft', async () => {
+      // This is what makes "I am not sure" a question rather than an error.
+      const row = await harness.db
+        .insertInto('source_records')
+        .values({
+          dataset_id: tenant.datasetId,
+          type: 'personal_yahrzeit',
+          display_name: 'Awaiting an answer',
+          hebrew_month: 'NISAN',
+          hebrew_day: 14,
+          original_hebrew_year: 5750,
+          original_gregorian_date: '1990-04-09',
+          sunset_status: null,
+          active: false,
+        })
+        .returning(['id', 'active', 'sunset_status'])
+        .executeTakeFirstOrThrow();
+
+      expect(row.active).toBe(false);
+      expect(row.sunset_status).toBeNull();
+    });
+
+    it('refuses to activate a draft while the sunset status is still unknown', async () => {
+      const draft = await harness.db
+        .insertInto('source_records')
+        .values({
+          dataset_id: tenant.datasetId,
+          type: 'personal_yahrzeit',
+          display_name: 'Still unresolved',
+          hebrew_month: 'IYYAR',
+          hebrew_day: 3,
+          original_hebrew_year: 5750,
+          original_gregorian_date: '1990-04-29',
+          sunset_status: null,
+          active: false,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+
+      // The whole point: no path, including a hand-written UPDATE, can turn an
+      // unresolved entry into one that generates occurrences.
+      const failure = await expectRejection(() =>
+        harness.db
+          .updateTable('source_records')
+          .set({ active: true })
+          .where('id', '=', draft.id)
+          .execute(),
+      );
+      expect(failure.constraint).toBe('unresolved_sunset_entry_cannot_be_active');
     });
 
     it('accepts the same row once the sunset status is stated', async () => {
@@ -66,11 +122,12 @@ describe.runIf(describeWithDatabase)('database constraints', () => {
           original_gregorian_date: '1990-04-09',
           sunset_status: 'after_sunset',
         })
-        .returning(['id', 'original_gregorian_date'])
+        .returning(['id', 'original_gregorian_date', 'active'])
         .executeTakeFirstOrThrow();
 
       // A calendar day, not an instant: it must survive the round trip as text.
       expect(row.original_gregorian_date).toBe('1990-04-09');
+      expect(row.active).toBe(true);
     });
 
     it('allows a Hebrew-only entry with no Gregorian date and no sunset status', async () => {

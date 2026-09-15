@@ -17,9 +17,14 @@
  * retry failures for something no retry can fix.
  */
 import type { GoogleAccountRow } from '@hebrew-dates/db';
-import { recordAudit } from '@hebrew-dates/db';
+import { recordAuditEvent } from '@hebrew-dates/db';
 import { open, openText, needsRewrap, rewrap } from '@hebrew-dates/crypto';
-import { checkScopes, refreshAccessToken, requiresReauth } from '@hebrew-dates/google-client';
+import {
+  GoogleApiError,
+  checkScopes,
+  refreshAccessToken,
+  requiresReauth,
+} from '@hebrew-dates/google-client';
 import { SECRET_PURPOSE, type ServiceContext } from './context';
 
 export class NoGoogleAccountError extends Error {
@@ -230,6 +235,27 @@ async function rewrapIfStale(
   }
 }
 
+/**
+ * Reduce a refresh failure to a category.
+ *
+ * The provider's message goes on the account row, where the dashboard can show
+ * it and the user can act on it. The audit log keeps only the category, because
+ * an upstream error body is free text and free text is where a name, a calendar
+ * id or a URL with a token in it ends up.
+ */
+function classifyReauthReason(
+  error: unknown,
+): 'invalid_grant' | 'insufficient_scope' | 'revoked' | 'unknown' {
+  if (!(error instanceof GoogleApiError)) return 'unknown';
+  if (error.reason === 'invalid_grant') {
+    // Google uses invalid_grant for both an expired token and a user who
+    // revoked access; the description distinguishes them.
+    return /revok/i.test(error.message) ? 'revoked' : 'invalid_grant';
+  }
+  if (error.reason === 'insufficientPermissions') return 'insufficient_scope';
+  return 'unknown';
+}
+
 async function markNeedsReauth(
   context: ServiceContext,
   account: GoogleAccountRow,
@@ -261,13 +287,18 @@ async function markNeedsReauth(
     .where('sync_status', 'in', ['pending', 'retry_scheduled', 'updating', 'deleting'])
     .execute();
 
-  await recordAudit(context.db, {
-    actorUserId: null,
-    action: 'google.needs_reauth',
-    subjectType: 'google_account',
-    subjectId: account.id,
-    detail: { reason: message.slice(0, 200) },
-  });
+  await recordAuditEvent(
+    context.db,
+    {
+      action: 'google.needs_reauth',
+      subjectType: 'google_account',
+      subjectId: account.id,
+      // A classified kind, not the provider's message. The message is stored
+      // on the account row for the dashboard; the audit log keeps the category.
+      reason: classifyReauthReason(error),
+    },
+    { actorUserId: null, at: context.now() },
+  );
 }
 
 /** Whether the stored grant still covers what the product needs. */
