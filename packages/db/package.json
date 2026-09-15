@@ -1,0 +1,28 @@
+{
+  "name": "@hebrew-dates/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "node --experimental-strip-types src/cli.ts migrate",
+    "db:status": "node --experimental-strip-types src/cli.ts status"
+  },
+  "dependencies": {
+    "kysely": "^0.28.2",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "@types/node": "^22.15.3",
+    "@types/pg": "^8.15.5"
+  }
+}

@@ -13,6 +13,8 @@
     "test:watch": "pnpm --filter @hebrew-dates/engine test:watch",
     "typecheck": "pnpm -r typecheck",
     "dev": "pnpm --filter @hebrew-dates/web dev",
-    "db:verify": "psql -v ON_ERROR_STOP=1 -f db/migrations/0001_init.sql && psql -f db/tests/constraints.sql"
+    "db:migrate": "pnpm --filter @hebrew-dates/db db:migrate",
+    "db:status": "pnpm --filter @hebrew-dates/db db:status",
+    "test:db": "pnpm --filter @hebrew-dates/db test"
   }
 }

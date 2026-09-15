@@ -1,8 +1,14 @@
--- Constraint verification for 0001_init.sql.
+-- Constraint verification for 0001_init.sql, by hand.
 --
--- Run against a throwaway database after applying the migration:
+-- SUPERSEDED for CI by `packages/db/test/integration/constraints.test.ts`, which
+-- covers everything here plus 0002, pins the constraint name each rejection came
+-- from, and runs from `pnpm test:db`. This file is kept because reading a
+-- rejection in psql is the fastest way to understand a constraint, and because
+-- it needs nothing but psql.
+--
+-- Run against a throwaway database after applying the migrations:
 --   createdb hebrewdates_test
---   psql -d hebrewdates_test -v ON_ERROR_STOP=1 -f db/migrations/0001_init.sql
+--   DATABASE_URL=postgres://.../hebrewdates_test pnpm db:migrate
 --   psql -d hebrewdates_test -f db/tests/constraints.sql
 --
 -- Every step labelled REJECT must print an ERROR, and every ACCEPT must not.
