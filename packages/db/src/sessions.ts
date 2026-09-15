@@ -45,6 +45,13 @@ export async function createSession(
     .values({
       id: hashToken(token),
       user_id: params.userId,
+      // `created_at` is written explicitly rather than left to the column
+      // default. `expires_at` is computed from `now`, and the CHECK constraint
+      // compares the two — so taking one from the application clock and the
+      // other from the database clock makes the insert fail whenever they
+      // disagree by more than the TTL.
+      created_at: now,
+      last_seen_at: now,
       expires_at: expiresAt,
       created_ip_prefix: params.ipPrefix ?? null,
     })
@@ -104,10 +111,19 @@ export async function storeOauthState(
     redirectPath?: string | null;
     userId?: string | null;
     now?: Date;
+    /**
+     * A caller-supplied `state`.
+     *
+     * The caller needs it *before* this row exists when the state hash is what
+     * the encrypted verifier is bound to — which it is, so that a ciphertext
+     * lifted into another `oauth_states` row cannot be decrypted. Omit it and
+     * one is generated here.
+     */
+    state?: string;
   },
 ): Promise<StoredOauthState> {
   const now = params.now ?? new Date();
-  const state = generateToken();
+  const state = params.state ?? generateToken();
   const expiresAt = new Date(now.getTime() + OAUTH_STATE_TTL_MS);
   await db
     .insertInto('oauth_states')
@@ -117,6 +133,8 @@ export async function storeOauthState(
       encryption_key_id: params.encryptionKeyId,
       redirect_path: params.redirectPath ?? null,
       user_id: params.userId ?? null,
+      // From the same clock as `expires_at`; see the note in `createSession`.
+      created_at: now,
       expires_at: expiresAt,
     })
     .execute();

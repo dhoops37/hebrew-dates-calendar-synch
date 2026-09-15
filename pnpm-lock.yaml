@@ -167,6 +167,9 @@ importers:
       '@hebrew-dates/sync':
         specifier: workspace:*
         version: link:../sync
+      kysely:
+        specifier: ^0.28.2
+        version: 0.28.17
     devDependencies:
       '@types/node':
         specifier: ^22.15.3
