@@ -181,7 +181,11 @@ describe.runIf(hasDatabase)('the first end-to-end flow', () => {
       destinationCalendarId: session.destinationCalendarId,
       userId: session.userId,
     });
-    expect(second).toEqual({ googleCalendarId: first.googleCalendarId, created: false });
+    expect(second).toEqual({
+      googleCalendarId: first.googleCalendarId,
+      created: false,
+      recreated: false,
+    });
     expect(harness.google.calendarIds()).toHaveLength(1);
 
     const stored = harness.google.calendar(first.googleCalendarId);

@@ -12,6 +12,7 @@ import type { Database } from '@hebrew-dates/db';
 import type { KeyManager } from '@hebrew-dates/crypto';
 import type { OAuthConfig } from '@hebrew-dates/google-client';
 import { GoogleCalendarClient } from '@hebrew-dates/google-client';
+import { CompositeGeocoder } from '@hebrew-dates/geocoding';
 
 /** Builds a Calendar client. Injected so tests can supply a fake `fetch`. */
 export type CalendarClientFactory = (accessToken: string) => GoogleCalendarClient;
@@ -25,6 +26,11 @@ export interface ServiceContext {
   /** Injected everywhere rather than calling `Date.now()` inside logic. */
   now: () => Date;
   calendarClient: CalendarClientFactory;
+  /**
+   * Place search. On the context rather than imported directly so a test can
+   * run the whole flow against the built-in catalogue with no network at all.
+   */
+  geocoder: CompositeGeocoder;
 }
 
 export interface BuildContextOptions {
@@ -34,6 +40,7 @@ export interface BuildContextOptions {
   appUrl: string;
   now?: () => Date;
   calendarClient?: CalendarClientFactory;
+  geocoder?: CompositeGeocoder;
 }
 
 export function buildContext(options: BuildContextOptions): ServiceContext {
@@ -43,6 +50,9 @@ export function buildContext(options: BuildContextOptions): ServiceContext {
     oauth: options.oauth,
     appUrl: options.appUrl.replace(/\/+$/, ''),
     now: options.now ?? (() => new Date()),
+    // Catalogue-only by default: a caller that wants live search passes one,
+    // which keeps the network out of anything that did not ask for it.
+    geocoder: options.geocoder ?? new CompositeGeocoder(),
     calendarClient:
       options.calendarClient ??
       ((accessToken) =>

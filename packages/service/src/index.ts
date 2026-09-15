@@ -14,4 +14,6 @@ export * from './records';
 export * from './sync';
 export * from './jobs';
 export * from './onboarding';
+export * from './sunset-decision';
+export * from './edit-delete';
 export * from './dashboard';

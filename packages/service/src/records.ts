@@ -75,6 +75,12 @@ export interface CreateHebrewDateResult {
   hebrewYearsGenerated: number;
   /** True when the engine flagged an ambiguity a user should look at. */
   requiresReview: boolean;
+  occurrenceKeys: string[];
+  /**
+   * True when the record is a draft waiting on the sunset question. Nothing was
+   * generated and nothing will be until the user answers.
+   */
+  awaitingSunsetDecision: boolean;
 }
 
 /**
@@ -90,12 +96,25 @@ export async function createHebrewDate(
   access: DatasetAccess,
   input: CreateHebrewDateInput,
 ): Promise<CreateHebrewDateResult> {
-  const record = await createSourceRecord(context.db, access, input);
+  // A Gregorian entry whose sunset status the user does not know is stored as
+  // an inactive draft: it exists, it is in their list marked as needing an
+  // answer, and it generates nothing. See sunset-decision.ts.
+  const awaitingSunset =
+    input.originalGregorianDate !== undefined &&
+    input.originalGregorianDate !== null &&
+    (input.sunsetStatus === undefined || input.sunsetStatus === null);
 
-  const generated = await generateAndPersist(context, access, {
-    record,
-    horizonYears: input.horizonYears ?? SYNCHRONOUS_HORIZON_YEARS,
+  const record = await createSourceRecord(context.db, access, {
+    ...input,
+    ...(awaitingSunset ? { active: false } : {}),
   });
+
+  const generated = awaitingSunset
+    ? { occurrencesPersisted: 0, hebrewYearsGenerated: 0, requiresReview: false, occurrenceKeys: [] }
+    : await generateAndPersist(context, access, {
+        record,
+        horizonYears: input.horizonYears ?? SYNCHRONOUS_HORIZON_YEARS,
+      });
 
   await recordAuditEvent(
     context.db,
@@ -114,13 +133,21 @@ export async function createHebrewDate(
     { actorUserId: access.userId, at: context.now() },
   );
 
-  return { record, ...generated };
+  return { record, ...generated, awaitingSunsetDecision: awaitingSunset };
 }
 
 export interface GenerateAndPersistResult {
   occurrencesPersisted: number;
   hebrewYearsGenerated: number;
   requiresReview: boolean;
+  /**
+   * The keys this generation produced.
+   *
+   * An edit needs these to find stale occurrences: a convention change that
+   * reduces the count in a year — both Adars down to Adar II only — leaves an
+   * orphan that nothing else would notice.
+   */
+  occurrenceKeys: string[];
 }
 
 /**
@@ -178,6 +205,7 @@ export async function generateAndPersist(
     occurrencesPersisted: persisted.length,
     hebrewYearsGenerated: resolved.hebrewYearsGenerated,
     requiresReview: resolved.requiresReview,
+    occurrenceKeys: resolved.occurrences.map((occurrence) => occurrence.key),
   };
 }
 
@@ -208,6 +236,7 @@ export async function extendDatasetHorizon(
   const records = await listSourceRecords(context.db, access);
   let occurrencesPersisted = 0;
   let extended = 0;
+
 
   for (const record of records) {
     if (!record.active) continue;

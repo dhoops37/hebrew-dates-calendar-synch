@@ -11,6 +11,11 @@
  * user confirming their home city while travelling must get their home city's
  * zone, not the one they happen to be sitting in.
  */
+// A triple-slash reference rather than relying on the declaration being picked
+// up ambiently: another package in this workspace compiles this file as part of
+// its own program, and an ambient .d.ts that is not in that program's `include`
+// is simply not loaded.
+/// <reference path="./tz-lookup.d.ts" />
 import tzLookup from 'tz-lookup';
 
 export class TimezoneLookupError extends Error {}

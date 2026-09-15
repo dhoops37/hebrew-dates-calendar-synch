@@ -258,6 +258,13 @@ export interface SourceRecordInput {
   notes?: string | null;
   customTitle?: string | null;
   adarConvention?: 'both' | 'adar_i' | 'adar_ii';
+  /**
+   * Defaults to active. Set false for a Gregorian entry whose sunset status the
+   * user has not settled yet: `unresolved_sunset_entry_cannot_be_active`
+   * requires it, and that is what makes "I am not sure" a storable state rather
+   * than an error.
+   */
+  active?: boolean;
 }
 
 export async function createSourceRecord(
@@ -280,6 +287,7 @@ export async function createSourceRecord(
       relationship: input.relationship ?? null,
       notes: input.notes ?? null,
       custom_title: input.customTitle ?? null,
+      ...(input.active !== undefined ? { active: input.active } : {}),
       ...(input.adarConvention
         ? {
             calculation_convention: {
@@ -319,6 +327,152 @@ export async function getSourceRecord(
     .executeTakeFirst();
   if (!row) throw new AccessDeniedError();
   return row;
+}
+
+export interface SourceRecordPatch {
+  displayName?: string;
+  hebrewName?: string | null;
+  relationship?: string | null;
+  notes?: string | null;
+  customTitle?: string | null;
+  hebrewMonth?: HebrewMonthValue;
+  hebrewDay?: number;
+  originalHebrewYear?: number | null;
+  sunsetStatus?: 'before_sunset' | 'after_sunset' | null;
+  adarConvention?: 'both' | 'adar_i' | 'adar_ii';
+  displayModeOverride?: 'exact_sunset' | 'two_day_all_day' | null;
+}
+
+/**
+ * Which fields of a patch actually differ from the stored row.
+ *
+ * Returned as names, not values. The caller needs to know *whether* the Hebrew
+ * date moved — because that re-keys every occurrence — and the audit log records
+ * which fields changed without recording what they changed to.
+ */
+export interface RecordChange {
+  changed: string[];
+  /** True when the patch moves the Hebrew date itself. */
+  dateChanged: boolean;
+}
+
+/** Fields that, if changed, change which Hebrew dates the engine produces. */
+const DATE_FIELDS = new Set([
+  'hebrewMonth',
+  'hebrewDay',
+  'originalHebrewYear',
+  'sunsetStatus',
+  'adarConvention',
+]);
+
+export function diffSourceRecord(
+  record: SourceRecordRow,
+  patch: SourceRecordPatch,
+): RecordChange {
+  const current: Record<string, unknown> = {
+    displayName: record.display_name,
+    hebrewName: record.hebrew_name,
+    relationship: record.relationship,
+    notes: record.notes,
+    customTitle: record.custom_title,
+    hebrewMonth: record.hebrew_month,
+    hebrewDay: record.hebrew_day,
+    originalHebrewYear: record.original_hebrew_year,
+    sunsetStatus: record.sunset_status,
+    adarConvention: (
+      record.calculation_convention as { adarOrdinaryYahrzeitInLeapYear: string }
+    ).adarOrdinaryYahrzeitInLeapYear,
+    displayModeOverride: record.display_mode_override,
+  };
+
+  const changed = Object.entries(patch)
+    .filter(([key, value]) => value !== undefined && current[key] !== value)
+    .map(([key]) => key);
+
+  return { changed, dateChanged: changed.some((field) => DATE_FIELDS.has(field)) };
+}
+
+/**
+ * Update a source record.
+ *
+ * Only the fields present in the patch are written, so a form that renders four
+ * fields cannot blank the other six. Returns the row as stored, which the
+ * caller needs in order to regenerate occurrences from the real values rather
+ * than from what it hoped it wrote.
+ */
+export async function updateSourceRecord(
+  db: Kysely<Database>,
+  access: DatasetAccess,
+  sourceRecordId: string,
+  patch: SourceRecordPatch,
+): Promise<SourceRecordRow> {
+  // Confirms the record is in this dataset before anything is written.
+  const existing = await getSourceRecord(db, access, sourceRecordId);
+
+  const values = {
+    ...(patch.displayName !== undefined ? { display_name: patch.displayName } : {}),
+    ...(patch.hebrewName !== undefined ? { hebrew_name: patch.hebrewName } : {}),
+    ...(patch.relationship !== undefined ? { relationship: patch.relationship } : {}),
+    ...(patch.notes !== undefined ? { notes: patch.notes } : {}),
+    ...(patch.customTitle !== undefined ? { custom_title: patch.customTitle } : {}),
+    ...(patch.hebrewMonth !== undefined ? { hebrew_month: patch.hebrewMonth } : {}),
+    ...(patch.hebrewDay !== undefined ? { hebrew_day: patch.hebrewDay } : {}),
+    ...(patch.originalHebrewYear !== undefined
+      ? { original_hebrew_year: patch.originalHebrewYear }
+      : {}),
+    ...(patch.sunsetStatus !== undefined ? { sunset_status: patch.sunsetStatus } : {}),
+    ...(patch.displayModeOverride !== undefined
+      ? { display_mode_override: patch.displayModeOverride }
+      : {}),
+    ...(patch.adarConvention !== undefined
+      ? {
+          calculation_convention: {
+            adarOrdinaryYahrzeitInLeapYear: patch.adarConvention,
+          },
+        }
+      : {}),
+    updated_at: new Date(),
+  };
+
+  if (Object.keys(values).length === 1) return existing;
+
+  return db
+    .updateTable('source_records')
+    .set(values)
+    .where('id', '=', sourceRecordId)
+    .where('dataset_id', '=', access.datasetId)
+    .where('deleted_at', 'is', null)
+    .returningAll()
+    .executeTakeFirstOrThrow();
+}
+
+/**
+ * Delete the occurrences of a record that no longer belong.
+ *
+ * Used after an edit that moved the Hebrew date: the occurrence key is derived
+ * from (record, hebrew year, sequence), so a moved date produces the *same*
+ * keys with different Gregorian dates — which is what makes an edit an update
+ * rather than a delete and recreate. This exists for the narrower case where a
+ * convention change reduces the number of occurrences in a year, e.g.
+ * both-Adars to Adar II only, leaving an orphan at sequence 1.
+ */
+export async function deleteOccurrencesNotIn(
+  db: Kysely<Database>,
+  access: DatasetAccess,
+  params: { sourceRecordId: string; keepOccurrenceKeys: string[] },
+): Promise<number> {
+  await getSourceRecord(db, access, params.sourceRecordId);
+
+  let query = db
+    .deleteFrom('generated_occurrences')
+    .where('source_record_id', '=', params.sourceRecordId);
+
+  if (params.keepOccurrenceKeys.length > 0) {
+    query = query.where('occurrence_key', 'not in', params.keepOccurrenceKeys);
+  }
+
+  const result = await query.executeTakeFirst();
+  return Number(result.numDeletedRows);
 }
 
 export async function setHorizon(
