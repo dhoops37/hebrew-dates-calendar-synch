@@ -17,9 +17,16 @@ Do them in this order — each one produces a value the next needs.
    - **Direct** — no `-pooler.` → this becomes `DATABASE_URL_DIRECT`
 
    These are not interchangeable and the application will refuse to confuse
-   them. Migrations take a session-scoped advisory lock and the job runner uses
-   `FOR UPDATE SKIP LOCKED`; a transaction pooler breaks both silently, by
-   multiplexing the transaction across connections so the lock protects nothing.
+   them. Migrations take a **session-scoped advisory lock**, held across several
+   statements; a transaction pooler could serve those statements from different
+   connections, so the lock would protect nothing. `pnpm db:migrate` therefore
+   reads `DATABASE_URL_DIRECT` and refuses a `-pooler.` host.
+
+   `DATABASE_URL_DIRECT` is only needed **where you run migrations from** — your
+   own machine — not in Vercel. The running application uses the pooled string
+   for everything, including the job runner: the job claim is deliberately a
+   single statement, so its row locks live and die inside one implicit
+   transaction, which a transaction pooler keeps on one connection.
 
 3. Confirm both strings end with `?sslmode=require`. The application refuses a
    remote database without it.
@@ -142,7 +149,6 @@ One project holds both the OAuth client and the KMS key.
    | Variable | Value |
    |---|---|
    | `DATABASE_URL` | the Neon **pooled** string |
-   | `DATABASE_URL_DIRECT` | the Neon **direct** string |
    | `GOOGLE_OAUTH_CLIENT_ID` | from step 2.4 |
    | `GOOGLE_OAUTH_CLIENT_SECRET` | from step 2.4 |
    | `GOOGLE_OAUTH_REDIRECT_URI` | `https://YOUR-DOMAIN/auth/google/callback` |

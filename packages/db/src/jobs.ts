@@ -9,10 +9,17 @@
  *
  * Two operational notes that are easy to get wrong:
  *
- *  - **The claim must run on a session-scoped connection.** Neon's pooled
- *    (pgBouncer) endpoint multiplexes transactions across connections, which
- *    breaks `FOR UPDATE`. `createDb({ requireDirectConnection: true })` enforces
- *    that for the worker.
+ *  - **The claim must be a single statement**, which is why `claimJobs` is one
+ *    `WITH … UPDATE … RETURNING` rather than a select followed by an update. A
+ *    lone statement is its own transaction, so the row locks are taken and
+ *    released inside it — which means the claim is safe on Neon's pooled
+ *    (pgBouncer) endpoint, because a transaction pooler pins a server
+ *    connection for the duration of a transaction. Split it into two
+ *    statements and that stops being true: the pooler could hand the second
+ *    one a different connection, where the locks from the first do not exist.
+ *    What genuinely needs the direct endpoint is the migration runner's
+ *    advisory lock, which is held *across* statements;
+ *    `createDb({ requireDirectConnection: true })` enforces it there.
  *  - **A claimed job must be released even if the worker dies.** Vercel can kill
  *    a function mid-run, so `running` jobs older than a lease window are
  *    reclaimed rather than left stuck forever.
