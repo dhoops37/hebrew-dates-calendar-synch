@@ -36,7 +36,7 @@ Do them in this order — each one produces a value the next needs.
    ```bash
    export DATABASE_URL_DIRECT='postgres://...'   # the DIRECT one
    pnpm db:migrate
-   pnpm db:status                                 # all three should be APPLIED
+   pnpm db:status                                 # all four should be APPLIED
    ```
 
    There are four migrations. `0003_rate_limits_and_geocoding.sql` is the one
@@ -143,9 +143,29 @@ One project holds both the OAuth client and the KMS key.
 
 ## 3. Vercel
 
-1. Import the repository at <https://vercel.com/new>. `vercel.json` in the
-   repository root already sets the build command, the output directory and the
-   cron schedule, so the defaults should need no adjustment.
+1. Import the repository at <https://vercel.com/new>, then **set the Root
+   Directory to `apps/web`** — *Settings → Build & Deployment → Root
+   Directory*.
+
+   This is the one setting that matters and it is worth understanding, because
+   getting it wrong produces two different confusing errors.
+
+   Vercel detects the framework from the `package.json` in the Root Directory.
+   `next` is a dependency of `apps/web`, not of the workspace root, so with the
+   root directory left at the repository root the build fails with *"No Next.js
+   version detected"*. Point it at `apps/web` and Vercel finds Next, and its
+   pnpm-workspace support still runs the install from the repository root so
+   the eight workspace packages `apps/web` imports are present.
+
+   Everything else is zero-config: the build command, the output directory and
+   the install command should all be left **unset** in the project settings.
+   If a previous import populated them — an earlier version of this repository
+   shipped a root `vercel.json` that did, and it did not work — clear them.
+
+   `apps/web/vercel.json` holds the cron schedule and nothing else. It lives
+   beside the app rather than at the repository root because Vercel reads
+   `vercel.json` **from the Root Directory**; a copy at the repository root
+   would be silently ignored, and the cron would never run.
 
 2. **Environment variables** — *Settings → Environment Variables*. Set these for
    Production (and Preview, if you want preview sign-in to work):
@@ -198,8 +218,8 @@ One project holds both the OAuth client and the KMS key.
    refuses to start with it and no KMS key, checking `VERCEL_ENV` as well as
    `NODE_ENV` — a Vercel preview also runs with `NODE_ENV=production`.
 
-3. **Cron.** `vercel.json` registers `/api/cron/sync` **once a day at 03:00
-   UTC** (`0 3 * * *`). Vercel sends `Authorization: Bearer $CRON_SECRET`
+3. **Cron.** `apps/web/vercel.json` registers `/api/cron/sync` **once a day at
+   03:00 UTC** (`0 3 * * *`). Vercel sends `Authorization: Bearer $CRON_SECRET`
    automatically. The endpoint refuses to run at all without `CRON_SECRET` set,
    rather than defaulting to open: anyone able to call it could exhaust the
    Google quota every user depends on.
@@ -215,14 +235,15 @@ One project holds both the OAuth client and the KMS key.
    matters for personal use, and **Sync now** on the dashboard runs the same
    work on demand whenever you do not want to wait.
 
-   **Switching back on Vercel Pro.** Change the one line in `vercel.json`:
+   **Switching back on Vercel Pro.** Change the one line in
+   `apps/web/vercel.json`:
 
    ```json
    "crons": [{ "path": "/api/cron/sync", "schedule": "*/15 * * * *" }]
    ```
 
-   and redeploy — the schedule is read from the deployed `vercel.json`, so there
-   is nothing to configure in the dashboard. Every-15-minutes is what the design
+   and redeploy — the schedule is read from the deployed `apps/web/vercel.json`,
+   so there is nothing to configure in the dashboard. Every-15-minutes is what the design
    assumes: `maxDuration` is 60s, the runner has its own smaller time budget and
    requeues what it cannot finish, and jobs are idempotent under
    `FOR UPDATE SKIP LOCKED`, so overlapping invocations claim different work.

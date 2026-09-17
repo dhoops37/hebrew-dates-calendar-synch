@@ -600,7 +600,7 @@ appear immediately, and **Sync now** runs the same work on demand. What waits
 up to a day is the remaining eighteen years and any retry after a transient
 Google failure.
 
-Switching back on Pro is one line in `vercel.json` and a redeploy. The design
+Switching back on Pro is one line in `apps/web/vercel.json` and a redeploy. The design
 already assumes the frequent case — `maxDuration` of 60s, a runner with its own
 smaller budget that requeues what it cannot finish, and idempotent jobs claimed
 under `FOR UPDATE SKIP LOCKED` so overlapping invocations take different work.
