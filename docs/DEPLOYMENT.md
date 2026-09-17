@@ -158,9 +158,41 @@ One project holds both the OAuth client and the KMS key.
    the eight workspace packages `apps/web` imports are present.
 
    Everything else is zero-config: the build command, the output directory and
-   the install command should all be left **unset** in the project settings.
-   If a previous import populated them — an earlier version of this repository
-   shipped a root `vercel.json` that did, and it did not work — clear them.
+   the install command should all read **"Auto"** in the project settings.
+
+   **"Auto" and "blank" are not the same thing, and the dashboard renders them
+   identically.** This is worth reading twice, because it cost a morning. An
+   *unset* setting means "detect it from the framework". An **empty string**
+   means "run nothing" — and a project whose Build, Install and Output settings
+   are all `""` produces a deployment that **succeeds** in about 100ms, installs
+   nothing, never detects Next.js, emits no output, and returns a platform 404
+   on every route. The build log shows no `Installing dependencies` line and no
+   `Detected Next.js version` line; that absence is the signature.
+
+   An import that reads a root `vercel.json` can leave these as empty strings,
+   and deleting that file does not clear them. The dashboard cannot tell you
+   which state you are in. The CLI can:
+
+   ```bash
+   npx vercel@latest project inspect <project>          # shows them blank either way
+   npx vercel@latest project update <project> \
+     --framework nextjs \
+     --auto-detect install-command \
+     --auto-detect build-command \
+     --auto-detect output-directory
+   ```
+
+   That second command prints `"" → Auto` for each setting it actually changed,
+   which is the only reliable way to see that they were empty strings rather
+   than unset.
+
+   Note also that **Redeploy will not help.** Project settings apply from the
+   *next* deployment; a redeploy replays the original deployment's settings, so
+   it reproduces the broken build however many times you run it. Trigger a new
+   deployment with a Git push instead — and if "Skip deployments when there are
+   no changes to the root directory or its dependencies" is enabled, the push
+   has to touch `apps/web` or one of the workspace packages it depends on, or it
+   will be skipped silently.
 
    `apps/web/vercel.json` holds the cron schedule and nothing else. It lives
    beside the app rather than at the repository root because Vercel reads

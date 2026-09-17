@@ -1,5 +1,13 @@
 import type { NextConfig } from 'next';
 
+/**
+ * Nothing here controls how Vercel builds this app — that lives in the Vercel
+ * project's own settings, and `docs/DEPLOYMENT.md` records the one that cost a
+ * morning: an **empty-string** Build/Install/Output setting is not the same as
+ * an unset one. Empty means "run nothing", and produces a deployment that
+ * succeeds in ~100ms with no output and 404s every route. They must read
+ * "Auto".
+ */
 const nextConfig: NextConfig = {
   // The engine is consumed as TypeScript source from the workspace, so Next
   // compiles it rather than requiring a separate build step during the
